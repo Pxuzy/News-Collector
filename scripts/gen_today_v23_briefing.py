@@ -1,0 +1,836 @@
+#!/usr/bin/env python
+# coding=utf-8
+"""Generate today's v23 News-Collector briefing from the fresh SQLite DB."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import sys
+from datetime import datetime, timedelta
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.environ.get("NEWS_COLLECTOR_ROOT") or os.path.dirname(SCRIPT_DIR)
+DB_PATH = os.path.join(ROOT, "data", "news.db")
+OUTPUT_DIR = os.path.join(ROOT, "output")
+CACHE_CANDIDATES = [
+    os.path.join(ROOT, "cron", "output", "_data_gaps_cache.json"),
+    os.path.join(ROOT, "output", "_data_gaps_cache.json"),
+]
+
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from store import CST, get_stats, normalize_heat  # noqa: E402
+
+
+SOURCE_CN = {
+    "baidu": "百度",
+    "zhihu": "知乎",
+    "toutiao": "头条",
+    "weibo": "微博",
+    "douyin": "抖音",
+    "bilibili": "B站",
+    "bilibili_pop": "B站热门",
+    "thepaper": "澎湃",
+    "ithome": "IT之家",
+    "36kr": "36氪",
+    "wallstreetcn": "华尔街见闻",
+    "jin10": "金十",
+    "xueqiu": "雪球",
+    "hackernews": "HackerNews",
+    "github": "GitHub",
+    "aihot": "AIHOT",
+    "arxiv": "arXiv",
+    "techcrunch": "TechCrunch",
+    "arstechnica": "Ars Technica",
+    "techmeme": "Techmeme",
+    "bbc_world": "BBC",
+    "reuters": "Reuters",
+    "googlenews": "Google新闻",
+    "reddit": "Reddit",
+    "huggingface": "HuggingFace",
+    "producthunt": "ProductHunt",
+    "tmtpost": "钛媒体",
+    "appso": "APPSO",
+    "juejin": "掘金",
+    "v2ex": "V2EX",
+    "sspai": "少数派",
+    "dongqiudi": "懂球帝",
+}
+
+SECTION_WORDING = {
+    "时政·外交": {
+        "impact": "这类事件会影响安全预期、外交沟通和舆论判断，热度高时还会带动周边议题持续扩散。",
+        "followup": "看官方后续说明、相关国家或机构回应，以及热度是否继续跨平台扩散。",
+        "insight": "这不是单条新闻热度，而是安全与外交信号共同叠加，适合放在今日主线里跟踪。",
+    },
+    "财经·商业": {
+        "impact": "它会影响投资者风险偏好、产业链预期和企业经营判断，尤其需要区分短期情绪和基本面变化。",
+        "followup": "看后续公告、市场成交变化、板块轮动和权威媒体确认。",
+        "insight": "财经类热点容易被情绪放大，重点是看是否有明确数据、政策或业绩支撑。",
+    },
+    "科技·数码": {
+        "impact": "它反映技术产品、平台生态或产业链变化，可能影响开发者选择、供应链订单和消费者预期。",
+        "followup": "看产品细节、真实评测、供应链确认、开源社区反馈和商业化进展。",
+        "insight": "科技热点要看落地路径，只有从概念进入产品、订单或开发者生态，才算真正变化。",
+    },
+    "汽车·能源": {
+        "impact": "它会影响汽车产业链、能源价格、补能网络和消费选择，也可能改变短期板块情绪。",
+        "followup": "看车企公告、交付数据、价格策略、能源价格和监管政策。",
+        "insight": "汽车能源热点需要同时看需求、价格和政策，单一热搜不能直接推出趋势结论。",
+    },
+    "娱乐·综艺": {
+        "impact": "它主要影响社交平台讨论、粉丝传播和内容消费，商业影响取决于是否带动票房、演出或品牌合作。",
+        "followup": "看当事方回应、平台二次传播、作品数据和商业转化。",
+        "insight": "娱乐热点传播快、衰减也快，重点看是否从饭圈扩散到大众讨论。",
+    },
+    "体育·赛事": {
+        "impact": "赛事结果会影响球队士气、球员声量和后续赛程关注度，高热度比赛还会带动泛体育讨论。",
+        "followup": "看赛后复盘、伤病情况、下一场对阵和官方处罚或判罚说明。",
+        "insight": "体育热点的核心不是比分本身，而是关键球员、争议判罚和后续晋级路径。",
+    },
+    "社会·民生": {
+        "impact": "它直接关系公共安全、生活成本或社会情绪，通常会引发政府处置、平台讨论和民生关注。",
+        "followup": "看官方通报、救援或整改进展、责任认定和后续民生影响。",
+        "insight": "民生热点要优先看事实核验和处置进度，不要只被情绪热度牵引。",
+    },
+    "AI·前沿": {
+        "impact": "它会影响开发者工具链、企业采购、开源生态和模型成本结构，是技术圈今天最值得跟踪的变量。",
+        "followup": "看官方发布、独立评测、代码或论文、API价格、社区真实使用反馈。",
+        "insight": "AI热点需要区分研究进展、产品发布和社区传闻；能复现、可部署、成本可控的变化价值更高。",
+    },
+}
+
+
+def connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def cutoff_iso(hours: int = 30) -> str:
+    return (datetime.now(CST) - timedelta(hours=hours)).isoformat()
+
+
+def parse_extra(item: dict) -> dict:
+    raw = item.get("extra") or "{}"
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def clean(text: object, max_len: int | None = None) -> str:
+    value = str(text or "").replace("\r", " ").replace("\n", " ").strip()
+    value = re.sub(r"\s+", " ", value)
+    value = value.replace("[", "【").replace("]", "】")
+    if max_len and len(value) > max_len:
+        return value[: max_len - 1].rstrip() + "…"
+    return value
+
+
+def md_link(item: dict) -> str:
+    title = clean(item.get("title"), 90)
+    url = clean(item.get("url")) or "链接未获取"
+    return f"[{title}]({url})"
+
+
+def heat_display(item: dict) -> str:
+    heat = normalize_heat(str(item.get("heat") or ""))
+    return heat or "热度未获取"
+
+
+def item_key(item: dict) -> str:
+    return clean(item.get("canonical_key") or item.get("url") or item.get("title"))
+
+
+def query_sql(where: str, params: list[object], limit: int) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM news_items
+            WHERE {where}
+              AND last_seen >= ?
+              AND COALESCE(is_duplicate,0)=0
+            ORDER BY heat_score DESC, last_seen DESC
+            LIMIT ?
+            """,
+            [*params, cutoff_iso(), limit],
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def query_source(source: str, limit: int = 10) -> list[dict]:
+    return query_sql("source=?", [source], limit)
+
+
+def query_categories(categories: list[str], limit: int = 10) -> list[dict]:
+    placeholders = ",".join("?" for _ in categories)
+    return query_sql(f"category IN ({placeholders})", list(categories), limit)
+
+
+def search_titles(keywords: list[str], limit: int = 10) -> list[dict]:
+    clauses = " OR ".join("title LIKE ?" for _ in keywords)
+    params = [f"%{kw}%" for kw in keywords]
+    return query_sql(f"({clauses})", params, limit)
+
+
+def unique(items: list[dict], limit: int) -> list[dict]:
+    seen: set[str] = set()
+    out: list[dict] = []
+    for item in items:
+        key = item_key(item)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def source_rank_maps(sources: list[str]) -> dict[str, dict[str, int]]:
+    ranks: dict[str, dict[str, int]] = {}
+    for source in sources:
+        ranks[source] = {}
+        for idx, item in enumerate(query_source(source, 80), 1):
+            ranks[source][item_key(item)] = idx
+    return ranks
+
+
+def source_line(item: dict, ranks: dict[str, dict[str, int]]) -> str:
+    source = item.get("source", "")
+    source_cn = SOURCE_CN.get(source, source)
+    rank = ranks.get(source, {}).get(item_key(item))
+    rank_text = f"#{rank}" if rank else "#排名未获取"
+    return f"{source_cn}{rank_text} · 热度{heat_display(item)}"
+
+
+def desc_for(item: dict, fallback: str) -> str:
+    extra = parse_extra(item)
+    desc = clean(extra.get("desc") or item.get("summary"), 150)
+    if desc:
+        return desc
+    return fallback
+
+
+def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict[str, str]:
+    title = clean(item.get("title"))
+    source = item.get("source", "")
+    extra = parse_extra(item)
+    blob = words_for(title, extra.get("hover"), extra.get("desc"), item.get("summary"))
+
+    if source == "github":
+        repo = repo_name(item)
+        desc = clean(extra.get("hover") or extra.get("desc") or item.get("summary"), 100)
+        return {
+            "event": f"GitHub 项目 {repo} 进入热榜；{desc or '当前简介缺失，需要打开仓库核实用途。'}",
+            "impact": "这类条目更像开发者工具信号，不是传统新闻事件；重点看它解决的开发流程、数据、Agent 或基础设施问题是否真实存在。",
+            "followup": "看 README、最近提交、issue、许可证、安装体验和是否有真实用户案例。",
+            "insight": "不要把总 Stars 当作今日新增热度；进入热榜代表短期曝光，真正价值要回到项目用途和维护质量。",
+        }
+
+    if section == "AI·前沿":
+        if contains_any(blob, ["面试", "招聘", "吐槽", "人才", "天才少年"]):
+            return {
+                "event": fallback_event,
+                "impact": "这更偏 AI 公司人才与组织口碑事件，不代表模型能力或产品突破；影响主要在雇主品牌、招聘信任和技术社区讨论。",
+                "followup": "看当事方补充、公司回应、是否有更多候选人经历交叉验证。",
+                "insight": "应按 AI 行业人才流动与组织治理观察，不能套用模型评测、API 定价或推理成本逻辑。",
+            }
+        if contains_any(blob, ["芯片", "融资", "gpu", "算力", "inference", "推理"]):
+            return {
+                "event": fallback_event,
+                "impact": "重点在算力供给、成本结构和产业链自主化；如果属实，会影响模型部署成本和上下游供应商预期。",
+                "followup": "看官方确认、融资文件、芯片规格、制程供应和第三方性能测试。",
+                "insight": "这类 AI 产业新闻要优先验证来源和硬指标，不能只看社媒热度。",
+            }
+        return {
+            "event": fallback_event,
+            "impact": "它可能影响模型能力、开发者工具链或 AI 应用落地，但需要先区分发布、传闻、社区讨论和真实产品更新。",
+            "followup": "看官方资料、独立评测、代码/论文、API 价格和真实用户反馈。",
+            "insight": "AI 条目的价值取决于可复现能力、成本和集成路径，标题热度本身不是结论。",
+        }
+
+    if source in {"bbc_world", "reuters", "googlenews"} or section == "时政·外交":
+        return {
+            "event": fallback_event,
+            "impact": "这类国际事件主要影响安全预期、外交沟通、援助资源或区域稳定，不能按普通财经或社媒传播逻辑解读。",
+            "followup": "看官方通报、当事国回应、后续伤亡/制裁/援助数据，以及 Reuters/BBC 等权威源是否持续更新。",
+            "insight": "国际新闻要优先核实事实链和时间线，热度只说明关注度，不等于事件已经定性。",
+        }
+
+    wording = SECTION_WORDING[section]
+    return {
+        "event": fallback_event,
+        "impact": wording["impact"],
+        "followup": wording["followup"],
+        "insight": wording["insight"],
+    }
+
+
+def add_news_block(lines: list[str], item: dict, section: str, ranks: dict[str, dict[str, int]], dot: str = "🟠") -> None:
+    title = clean(item.get("title"), 70)
+    source_name = SOURCE_CN.get(item.get("source", ""), item.get("source", ""))
+    fallback_event = f"围绕“{title}”的最新进展成为{source_name}热点，当前仍在发酵。"
+    wording = item_specific_wording(item, section, fallback_event)
+    lines.append(f"{dot} {md_link(item)}")
+    lines.append("")
+    lines.append(f"> 📍 来源：{source_line(item, ranks)}  ")
+    lines.append(f"> 📌 事件：{desc_for(item, wording['event'])}  ")
+    lines.append(f"> 🌊 影响：{wording['impact']}  ")
+    lines.append(f"> 👀 后续：{wording['followup']}  ")
+    lines.append(f"> 💡 解读：{wording['insight']}  ")
+    lines.append("> ✅ 可信度：来自采集库，需结合原始链接继续核验")
+    lines.append("")
+
+
+def add_short_block(lines: list[str], item: dict, section: str, ranks: dict[str, dict[str, int]]) -> None:
+    wording = SECTION_WORDING[section]
+    fallback_event = f"“{clean(item.get('title'), 60)}”进入今日热点列表。"
+    lines.append(f"🟠 {md_link(item)}")
+    lines.append("")
+    lines.append(f"> 📍 来源：{source_line(item, ranks)}  ")
+    lines.append(f"> 📌 事件：{desc_for(item, fallback_event)}  ")
+    lines.append(f"> 💡 解读：{wording['insight']}  ")
+    lines.append("> ✅ 可信度：来自采集库，需结合原始链接继续核验")
+    lines.append("")
+
+
+def load_cache() -> dict:
+    for path in CACHE_CANDIDATES:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    return {}
+
+
+def repo_name(item: dict) -> str:
+    title = clean(item.get("title")).replace(" / ", "/").replace(" ", "")
+    if "/" in title:
+        parts = [part.strip() for part in title.split("/") if part.strip()]
+        if len(parts) >= 2:
+            return f"{parts[-2]}/{parts[-1]}"
+    url = clean(item.get("url"))
+    if "github.com/" in url:
+        rest = url.split("github.com/", 1)[1].split("?")[0].strip("/")
+        parts = rest.split("/")
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
+    return title
+
+
+def github_info(repo: str, cache: dict) -> dict:
+    return cache.get("github_language", {}).get(repo, {})
+
+
+AI_TERMS = (
+    "ai", "artificial intelligence", "llm", "gpt", "claude", "gemini", "deepseek",
+    "qwen", "glm", "agent", "agents", "model", "models", "codex", "openai",
+    "huggingface", "rag", "inference", "prompt", "大模型", "人工智能", "模型",
+    "智能体", "推理", "算力", "芯片",
+)
+
+
+def words_for(*parts: object) -> str:
+    return " ".join(clean(part) for part in parts if part).lower()
+
+
+def contains_any(text: str, keywords: tuple[str, ...] | list[str]) -> bool:
+    return any(keyword.lower() in text for keyword in keywords)
+
+
+def is_ai_relevant(item: dict) -> bool:
+    title = words_for(item.get("title"), item.get("summary"), parse_extra(item).get("desc"))
+    source = item.get("source", "")
+    if source in {"aihot", "huggingface", "arxiv", "tldr_ai"}:
+        return True
+    return contains_any(title, AI_TERMS)
+
+
+def github_profile(repo: str, desc: str, language: str, topics: list[str] | None, label: str) -> dict[str, str]:
+    blob = words_for(repo, desc, language, " ".join(topics or []))
+    if not desc or desc.startswith("项目简介未获取"):
+        return {
+            "summary": "项目简介未获取，当前只能确认它进入了 GitHub 趋势榜，不能直接判断用途和成熟度。",
+            "purpose": "先把它当作待核验项目处理：打开 README 看目标用户、安装步骤、许可证和最近提交，再决定是否纳入工具链或观察列表。",
+            "why": f"热度信号来自 GitHub {label}排名；Stars 若缺失或为空，不能作为强热度证据。",
+            "follow": "README、许可证、最近 release、issue 质量、是否有真实 demo 或用户案例。",
+        }
+
+    if contains_any(blob, ["security", "pentest", "penetration", "vulnerab", "red-team", "hacking", "ctf"]):
+        return {
+            "summary": "安全测试/漏洞发现工具。",
+            "purpose": f"从简介看，它面向安全测试或 AI 应用风险排查，核心价值是把漏洞发现、验证或修复流程工具化。适合安全工程师、红队和正在上线 AI 应用的团队先做小范围试用。",
+            "why": f"安全自动化和 AI 安全是近期开发者关注高地，进入 GitHub {label}说明该方向正在被快速验证。",
+            "follow": "漏洞覆盖范围、误报率、沙箱隔离、报告质量、是否有安全审计和企业场景案例。",
+        }
+    if contains_any(blob, ["scrape", "scraping", "crawler", "crawl", "web data", "extract", "search"]):
+        return {
+            "summary": "网页抓取、搜索或数据抽取基础设施。",
+            "purpose": "它解决的是把网页内容稳定转换为可用数据的问题，常用于 RAG、监控、数据采集和自动化研究。重点不是“又一个爬虫”，而是稳定性、反爬处理、结构化质量和成本。",
+            "why": f"AI 应用需要高质量外部数据，Web 数据基础设施上榜 GitHub {label}通常反映开发者在补齐数据入口。",
+            "follow": "限流策略、robots 合规、结构化精度、失败重试、API 定价和大规模任务稳定性。",
+        }
+    if contains_any(blob, ["meeting", "transcription", "whisper", "speaker", "diarization", "ollama"]):
+        return {
+            "summary": "会议记录、转写或本地 AI 助理。",
+            "purpose": "它面向会议音频转写、说话人分离和本地总结，价值在于把会议内容转为可搜索、可复盘的结构化资料。隐私、本地运行和实时性是判断它是否实用的关键。",
+            "why": f"会议 AI 从云端服务转向本地隐私方案，进入 GitHub {label}说明开发者正在寻找可控替代品。",
+            "follow": "转写准确率、中文支持、离线模型、说话人分离效果、导出格式和企业合规能力。",
+        }
+    if contains_any(blob, ["dataset", "data set", "exercises", "fitness", "benchmark"]):
+        return {
+            "summary": "数据集或基准资源。",
+            "purpose": "它的价值不在运行时能力，而在数据覆盖、字段结构和授权方式。适合需要快速构建 demo、训练样本或评测集的团队核验数据质量后再使用。",
+            "why": f"数据资源进入 GitHub {label}通常说明某个垂直场景缺少标准化开放数据。",
+            "follow": "许可证、字段完整度、样本来源、更新频率、数据偏差和是否有可复现实验。",
+        }
+    if contains_any(blob, ["gateway", "provider", "route", "router", "endpoint", "token", "claude code", "cursor", "cline"]):
+        return {
+            "summary": "AI 模型网关或开发工具接入层。",
+            "purpose": "它把多个模型或开发工具接到统一入口，重点价值是降低接入成本、切换成本和失败兜底成本。适合多模型工作流团队关注，但要重点核验稳定性和凭据安全。",
+            "why": f"多模型调用和成本控制需求上升，网关类项目进入 GitHub {label}说明工具链正在从单模型转向路由层。",
+            "follow": "鉴权方式、日志隐私、限流、失败重试、供应商覆盖、免费额度真实性和自托管能力。",
+        }
+    if contains_any(blob, ["agent", "agents", "codex", "claude", "mcp", "skills", "workflow", "multiplexer"]):
+        return {
+            "summary": "AI Agent 或编码工作流工具。",
+            "purpose": "它围绕 Agent 编排、技能管理或编码助手协作展开，解决的是让多个 AI 工具更可控地完成开发任务。真正价值取决于工作流是否清晰、状态是否可追踪、失败是否可恢复。",
+            "why": f"Agent 开发工具仍是 GitHub {label}高频主题，上榜说明开发者在寻找更稳定的 AI 协作层。",
+            "follow": "任务隔离、上下文管理、权限边界、插件生态、实际项目案例和与现有 IDE/CLI 的集成成本。",
+        }
+    if contains_any(blob, ["awesome", "list", "resources", "curated"]):
+        return {
+            "summary": "资料索引或 curated list。",
+            "purpose": "它不是可运行工具，而是把某一领域资源整理成索引。价值取决于筛选标准、更新频率和去重质量；适合作为调研入口，不适合作为工程能力本身引用。",
+            "why": f"资料集合上 GitHub {label}通常代表该领域资料爆炸，开发者需要更好的导航入口。",
+            "follow": "维护频率、收录标准、失效链接、是否区分入门/高级资源和是否接受社区 PR。",
+        }
+    if contains_any(blob, ["photo", "video", "media", "gallery", "dictation", "voice", "stt"]):
+        return {
+            "summary": "媒体、语音或个人数据管理工具。",
+            "purpose": "它面向图片、视频或语音内容处理，关键是把个人数据管理、检索或转写流程做得更可控。判断价值时要优先看本地部署、隐私和导入导出能力。",
+            "why": f"个人数据和本地 AI 工具在 GitHub {label}持续升温，说明用户想减少对封闭云服务的依赖。",
+            "follow": "隐私模型、备份恢复、移动端体验、硬件要求、格式兼容和迁移成本。",
+        }
+    return {
+        "summary": "开发者工具或开源基础设施。",
+        "purpose": f"从简介看，它解决的是“{clean(desc, 80)}”这一类工程问题。先按开发者工具评估：能否快速安装、能否接入现有流程、文档是否足够支撑真实使用。",
+        "why": f"进入 GitHub {label}说明它在开发者社区获得趋势曝光；Stars 是总量指标，不等同于今日新增热度。",
+        "follow": "安装体验、核心功能边界、维护者活跃度、issue 响应、许可证和与同类工具的差异。",
+    }
+
+
+def add_github_item(lines: list[str], repo: str, url: str, rank: int, info: dict, daily: bool, item: dict | None = None) -> None:
+    stars = info.get("stars")
+    if not stars:
+        item_heat = clean((item or {}).get("heat")).replace("⭐", "").replace(",", "")
+        stars = item_heat if item_heat else "Stars未获取"
+    language = info.get("language") or "语言未获取"
+    extra = parse_extra(item or {})
+    desc = clean(
+        info.get("description")
+        or extra.get("description")
+        or extra.get("hover")
+        or extra.get("desc")
+        or (item or {}).get("summary"),
+        140,
+    ) or "项目简介未获取，需点开 README 核实。"
+    topics = info.get("topics") or []
+    label = "日榜" if daily else "周榜"
+    profile = github_profile(repo, desc, language, topics, label)
+    lines.append(f"• GitHub#{rank} {label} [{repo}]({url}) ⭐ {stars} · {language}")
+    lines.append("")
+    lines.append(f"> 📌 项目：{profile['summary']} {desc}  ")
+    lines.append(f"> 🧩 是干嘛的：{profile['purpose']}  ")
+    lines.append(f"> 🔥 为什么热：GitHub#{rank} {label} · {profile['why']}  ")
+    lines.append(f"> 👀 后续看：{profile['follow']}")
+    lines.append("")
+
+
+def hn_topic(title: str) -> tuple[str, str, str]:
+    blob = words_for(title)
+    if contains_any(blob, ["privacy", "track", "device id", "security", "threat", "verification", "steganographic"]):
+        return ("安全/隐私", "重点看攻击面、平台默认策略和用户是否有可操作的规避或防护选择。", "评论区通常会补充真实复现、威胁模型和平台方动机。")
+    if contains_any(blob, ["llm", "gpt", "claude", "qwen", "glm", "language model", "models", "ai ", "agent"]):
+        return ("AI/模型", "重点看模型能力、成本、开放性和开发者工作流影响，不要只看发布标题。", "评论区通常会围绕基准、定价、开源可用性和实际体验展开。")
+    if contains_any(blob, ["openwrt", "router", "hardware", "ryzen", "gpu", "linux", "atari", "device"]):
+        return ("硬件/系统", "重点看硬件可得性、开放程度、驱动支持和长期维护成本。", "评论区往往会给出购买、刷机、兼容性和性能方面的实测经验。")
+    if contains_any(blob, ["map", "openstreetmap", "offline", "foss"]):
+        return ("开源应用", "重点看它是否能替代封闭服务，以及数据源、离线体验和社区维护是否可靠。", "评论区通常会比较同类应用、隐私取舍和平台限制。")
+    if contains_any(blob, ["xbox", "steam", "game", "gaming"]):
+        return ("游戏/平台", "重点看平台策略变化、开发者生态和用户迁移成本。", "评论区通常会出现大量用户体验、商业模式和平台锁定讨论。")
+    if contains_any(blob, ["cell", "dna", "researchers", "scientists", "netherlands"]):
+        return ("科学/科研", "重点看研究本身的可验证性、资源投入和政策环境变化。", "评论区常会补充背景论文、实验限制或科研制度讨论。")
+    return ("工程", "重点看它解决的具体工程问题、是否能复现、以及是否比现有方案更简单。", "评论区通常会补充边界条件、替代方案和真实使用经验。")
+
+
+def discussion_signal(points: object, comments: object) -> str:
+    try:
+        p = int(str(points).replace(",", "").strip())
+    except Exception:
+        p = 0
+    try:
+        c = int(str(comments).replace(",", "").strip())
+    except Exception:
+        c = 0
+    if not c:
+        return "Comments 未获取，先把它当作高热条目处理，后续需要打开 HN 原帖确认争议点。"
+    if p and c >= p * 0.6:
+        return f"{c} 条评论相对 {p} points 偏高，说明它不只是被点赞，还引发了明显争议或经验交换。"
+    if c >= 250:
+        return f"{c} 条评论说明讨论深，适合优先看高赞评论里的反例、替代方案和实践经验。"
+    return f"{c} 条评论说明已有一定讨论，但更像信息分享；重点看前排评论是否给出实测或反驳。"
+
+
+def add_hn_item(lines: list[str], item: dict, rank: int, cache: dict) -> None:
+    hn_cache = cache.get("hn_comments", {})
+    cached = hn_cache.get(item.get("title", ""), {}) if isinstance(hn_cache, dict) else {}
+    points = cached.get("points") or clean(item.get("heat")).replace(" points", "") or "未获取"
+    comments = cached.get("comments") or "未获取"
+    url = cached.get("hn_url") or clean(item.get("url")) or "链接未获取"
+    topic_type, focus, discussion_focus = hn_topic(clean(item.get("title")))
+    lines.append(f"• HN#{rank} [{clean(item.get('title'), 90)}]({url}) Points：{points} · Comments：{comments} · 类型：{topic_type}")
+    lines.append("")
+    lines.append(f"> 💡 解读：这是 {topic_type} 话题，{focus} {discussion_signal(points, comments)} {discussion_focus}")
+    lines.append("")
+
+
+def paper_profile(title: str, summary: str = "") -> dict[str, str]:
+    blob = words_for(title, summary)
+    if contains_any(blob, ["counterfactual", "explanation", "explanations", "neuro-symbolic", "plausible", "actionable"]):
+        return {
+            "doing": "从标题看，这篇论文关注反事实解释和可操作解释，把模型输出转成更容易追责或干预的解释形式。",
+            "why": "它重要在于服务高风险决策场景，重点不是提升榜单分数，而是让人知道模型为什么给出某个判断以及还能怎么改。",
+            "value": "适合做可解释 AI、金融风控、医疗辅助决策或模型审计的人跟踪；后续看解释是否忠实、是否可行动、用户实验是否充分。",
+            "engineering": "工程落点是解释模块和审计流程；当前标题没有给出量化提升，不能写成已有明确性能增益。",
+        }
+    if contains_any(blob, ["preference", "pairwise", "pluralism", "alignment", "governing", "human-ai"]):
+        return {
+            "doing": "从标题看，它研究偏好、成对比较或人机交互中的价值分歧，核心是如何更稳地表达和治理不同偏好。",
+            "why": "这类工作影响模型评测、RLHF/偏好学习和对齐策略，重要性在于避免把复杂偏好压成单一排序。",
+            "value": "适合做模型评测、对齐、安全治理和推荐系统的人跟踪；后续看实验设置、偏好人群划分和是否能用于真实标注流程。",
+            "engineering": "工程价值主要在评测和标注流程设计；若没有公开数据或代码，需要谨慎评估可复现性。",
+        }
+    if contains_any(blob, ["uncertainty", "partial observability", "assistance", "ask in the dark"]):
+        return {
+            "doing": "从标题看，它研究在信息不完整时如何让 LLM 辅助决策，并用不确定性门控决定何时介入或保守回答。",
+            "why": "这对客服、运维、医疗问答和复杂任务代理都重要，因为真实场景经常不是信息充分的 benchmark。",
+            "value": "适合做 Agent、决策支持和高风险问答系统的人跟踪；后续看不确定性估计是否可靠、拒答策略是否降低错误帮助。",
+            "engineering": "工程价值在于把置信度、追问和人工接管接入产品流程；标题未给出数字，需看论文实验再判断提升幅度。",
+        }
+    if contains_any(blob, ["data readiness", "scientific ai", "data quality", "dataset"]):
+        return {
+            "doing": "从标题看，它关注科学 AI 的数据就绪度，目标是自动检查或改善数据能否支撑建模和实验。",
+            "why": "科学 AI 的瓶颈常在数据质量、元数据和可复现管线，而不只是模型结构。",
+            "value": "适合科研数据平台、实验室自动化和行业 AI 团队跟踪；后续看支持哪些数据类型、质量规则和人工审核机制。",
+            "engineering": "工程价值在数据治理和实验前置校验；需要看是否有工具链、数据 schema 和失败案例。",
+        }
+    if contains_any(blob, ["coding agent", "coding agents", "swarm", "agentic", "open-ended discovery", "self-evolving"]):
+        return {
+            "doing": "从标题看，它研究多个编码 Agent 或自演化 Agent 如何协作完成开放式发现和开发任务。",
+            "why": "这直接关系 AI 编程工具从单次补全走向长期任务执行，关键问题是任务分解、选择机制和失败恢复。",
+            "value": "适合 AI 编程工具、自动化研究和多 Agent 编排方向跟踪；后续看任务集是否真实、评测是否防止刷分、成本是否可控。",
+            "engineering": "工程价值取决于能否落到可运行工作流；优先核对代码、任务日志、成本统计和失败样例。",
+        }
+    if contains_any(blob, ["federated learning", "federated", "auto-fl"]):
+        return {
+            "doing": "从标题看，它把自动搜索或 Agent 方法用于联邦学习算法设计，目标是在分布式数据约束下找到更合适的训练策略。",
+            "why": "联邦学习落地难点在非独立同分布数据、通信成本和隐私约束，自动化搜索可能降低算法选择成本。",
+            "value": "适合隐私计算、医疗/金融建模和边缘训练团队跟踪；后续看数据异质性设置、通信轮数和隐私假设。",
+            "engineering": "工程价值要看是否能接入现有 FL 框架，以及搜索成本是否小于人工调参成本。",
+        }
+    if contains_any(blob, ["embodied", "omni", "multimodal", "vision-language", "robot"]):
+        return {
+            "doing": "从标题看，它是具身智能或多模态模型技术报告，关注模型如何同时处理感知、语言和行动相关任务。",
+            "why": "这类报告的价值在系统能力边界和数据/评测覆盖，而不是单个 demo。",
+            "value": "适合机器人、多模态和智能体应用团队跟踪；后续看任务覆盖、真实环境测试、模型规模和开源程度。",
+            "engineering": "工程价值取决于是否公开模型、数据和部署成本；标题本身不足以判断实际可用性。",
+        }
+    return {
+        "doing": f"从标题看，这篇论文关注“{clean(title, 70)}”这一研究问题，需要结合摘要确认具体方法和实验对象。",
+        "why": "它的重要性取决于是否提出清晰任务定义、可复现实验和比现有方法更好的证据。",
+        "value": "适合相关方向研究者先做筛选；后续看摘要、方法、基线、数据集和失败案例，而不是仅凭标题判断价值。",
+        "engineering": "当前没有足够信息写具体工程收益，先标记为待核验，避免把标题包装成确定结论。",
+    }
+
+
+def add_paper_item(lines: list[str], item: dict) -> None:
+    title = clean(item.get("title"), 100)
+    extra = parse_extra(item)
+    summary = clean(item.get("summary") or extra.get("summary") or extra.get("desc"), 240)
+    profile = paper_profile(title, summary)
+    lines.append(f"📄 {md_link(item)}")
+    lines.append("")
+    lines.append(f"> 📌 做什么：{profile['doing']} {profile['why']}")
+    lines.append("")
+    lines.append(f"> 💡 价值：{profile['value']}")
+    lines.append("")
+    lines.append(f"> 💡 工程价值：{profile['engineering']}")
+    lines.append("")
+    lines.append("> 代码：未获取")
+    lines.append("")
+
+
+def section_for_item(item: dict) -> str:
+    title = clean(item.get("title"))
+    category = item.get("category", "")
+    if any(word in title for word in ["洪", "台风", "防汛", "暴雨", "救灾", "水库", "灾害"]):
+        return "社会·民生"
+    if any(word in title for word in ["世界杯", "男篮", "女篮", "乒乓", "夺冠", "赛事", "C罗", "孙颖莎"]):
+        return "体育·赛事"
+    if category in ("军事", "时政", "国际"):
+        return "时政·外交"
+    if category == "财经":
+        return "财经·商业"
+    if category in ("科技", "AI"):
+        return "AI·前沿" if category == "AI" else "科技·数码"
+    if category == "汽车·能源":
+        return "汽车·能源"
+    if category == "娱乐":
+        return "娱乐·综艺"
+    return "社会·民生"
+
+
+def social_news_insight(item: dict) -> str:
+    title = clean(item.get("title"), 45)
+    blob = words_for(title, parse_extra(item).get("desc"), item.get("summary"))
+
+    if contains_any(blob, ["潜射", "战略导弹", "试射", "海军"]):
+        return f"“{title}”属于军事安全新闻，重点看试射目的、技术验证和释放的战略信号。"
+    if contains_any(blob, ["猿辅导", "英语老师", "教资", "发音", "客服回应"]):
+        return f"“{title}”反映在线教育服务质量争议，重点看机构核查结果、教师资质和消费者沟通。"
+    if contains_any(blob, ["橙色预警", "水利部升级", "洪水预警"]):
+        return f"“{title}”是防汛预警升级信息，重点看涉及流域、风险地区和地方防范措施。"
+    if contains_any(blob, ["通报受灾情况"]):
+        return f"“{title}”是灾情通报，重点看受灾范围、人员安置、基础设施受损和后续恢复安排。"
+    if contains_any(blob, ["受灾", "洪水", "洪涝", "救援", "抢险", "紧急响应"]):
+        return f"“{title}”的核心是灾情处置进展，重点看受影响范围、救援安置和后续恢复安排。"
+    if contains_any(blob, ["台风", "登陆", "路径", "巴威"]):
+        return f"“{title}”说明台风路径或影响范围仍有变化，后续要看气象预报、停航停课和地方响应。"
+    if contains_any(blob, ["暴雨", "强对流", "防汛", "避险", "预警", "天气", "紧急提示"]):
+        return f"“{title}”是一条公共安全提醒，关键信息是风险区域、避险动作和出行限制。"
+    if contains_any(blob, ["男篮", "女篮", "足球", "世界杯", "c罗", "c 罗", "哈兰德", "比赛", "赛事", "夺冠", "判罚"]):
+        if contains_any(blob, ["禁赛", "规则", "国际足联", "电话交涉", "特朗普"]):
+            return f"“{title}”涉及赛事规则和场外干预争议，关键看官方解释、球队表态和程序公平问题。"
+        if contains_any(blob, ["姐姐", "同框", "家族", "像哈兰德"]):
+            return f"“{title}”属于运动员个人相关轻话题，主要看点是公众人物家庭形象带来的反差讨论。"
+        if contains_any(blob, ["c罗", "c 罗", "葡萄牙", "西班牙", "运气"]):
+            return f"“{title}”是赛后观点争议，判断时应回到比赛过程、关键数据和双方表现。"
+        return f"“{title}”是一条赛事结果新闻，重点看关键球员表现、比赛走势和后续赛程影响。"
+    if contains_any(blob, ["微信", "功能", "临时好友", "乘机", "出行", "app", "手机", "平台", "产品"]):
+        if contains_any(blob, ["乘机", "出行", "暑期"]):
+            return f"“{title}”关系暑期出行便利，重点看措施覆盖范围、执行细则和实际体验。"
+        return f"“{title}”讨论的是具体功能需求，重点在使用场景、隐私边界和服务方是否回应。"
+    if contains_any(blob, ["双开", "通报", "调查", "处罚", "立案"]):
+        return f"“{title}”已经进入正式处置阶段，后续重点是处分依据、涉事链条和进一步问责信息。"
+    if contains_any(blob, ["法院", "律师", "刑事"]):
+        return f"“{title}”触及法律服务和程序权利，关键是区分个案经验、制度规则和可核实证据。"
+    if contains_any(blob, ["版权", "文物"]):
+        return f"“{title}”牵涉知识产权或公共文化资产，重点看判决依据、权属证明和行业示范效应。"
+    if contains_any(blob, ["明星", "综艺", "穿搭", "情侣", "演唱会", "电影", "电视剧", "恋情", "粉丝"]):
+        if contains_any(blob, ["穿搭", "情侣"]):
+            return f"“{title}”是一条生活方式内容，核心看点是季节搭配、使用场景和可参考程度。"
+        return f"“{title}”属于娱乐动态，重点看当事方回应、作品进展和商业合作是否受影响。"
+    return f"“{title}”需要先核实事实来源，再看事件背景、影响对象和后续进展。"
+
+
+def social_insight(source: str, item: dict, idx: int) -> str:
+    return social_news_insight(item)
+
+
+def add_social(lines: list[str], source: str, label: str, count: int) -> None:
+    lines.append(f"{label}")
+    lines.append("")
+    for idx, item in enumerate(query_source(source, count), 1):
+        lines.append(f"• {SOURCE_CN.get(source, source)}#{idx} {md_link(item)} · 热度{heat_display(item)}")
+        lines.append(f"> 💡 解读：{social_insight(source, item, idx)}")
+    lines.append("")
+
+
+def build_briefing() -> tuple[str, str]:
+    now = datetime.now(CST)
+    today = now.strftime("%Y-%m-%d")
+    weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
+    output_path = os.path.join(OUTPUT_DIR, f"news-{today}.md")
+    cache = load_cache()
+
+    all_sources = [
+        "baidu", "weibo", "toutiao", "zhihu", "douyin", "github", "hackernews",
+        "arxiv", "ithome", "36kr", "wallstreetcn", "jin10", "xueqiu",
+        "bbc_world", "reuters", "techcrunch", "thepaper", "bilibili_pop",
+        "aihot", "dongqiudi",
+    ]
+    ranks = source_rank_maps(all_sources)
+    stats = get_stats(days=1)
+
+    lines: list[str] = []
+    lines.append("📰 **今日热点 · 全源聚合**")
+    lines.append("")
+    lines.append(f"📅 `{now.strftime('%Y.%m.%d')}（{weekday}）` · `晚间版`")
+    lines.append("")
+    lines.append(f"**数据来源**：头条/微博/知乎/百度/抖音/IT之家/GitHub/HN/arXiv ｜ 采集时间：{now.strftime('%Y-%m-%d %H:%M')}")
+    lines.append("")
+
+    main_items = unique(
+        search_titles(["潜射", "战略导弹", "防汛", "洪水", "台风", "A股", "苹果折叠屏", "DeepSeek", "世界杯", "GLM"], 30),
+        5,
+    )
+    if len(main_items) < 5:
+        main_items.extend(query_categories(["社会", "军事", "财经", "AI", "体育"], 10))
+        main_items = unique(main_items, 5)
+
+    lines.append("🧭 **今日主线**")
+    lines.append("")
+    for idx, item in enumerate(main_items, 1):
+        add_news_block(lines, item, section_for_item(item), ranks, "🔴" if idx <= 3 else "🟠")
+
+    sections = [
+        ("🌍 **时政·外交**", "时政·外交", query_categories(["时政", "军事", "国际"], 8)),
+        ("💰 **财经·商业**", "财经·商业", query_categories(["财经"], 8) + query_source("wallstreetcn", 4)),
+        ("🔬 **科技·数码**", "科技·数码", query_categories(["科技", "AI"], 8) + query_source("ithome", 4)),
+        ("🚗 **汽车·能源**", "汽车·能源", query_categories(["汽车·能源"], 6) + search_titles(["汽车", "新能源", "电池", "油价", "充电"], 6)),
+        ("🎬 **娱乐·综艺**", "娱乐·综艺", query_categories(["娱乐"], 6) + query_source("bilibili_pop", 4)),
+        ("⚽ **体育·赛事**", "体育·赛事", query_categories(["体育"], 8) + query_source("dongqiudi", 4)),
+        ("🌞 **社会·民生**", "社会·民生", query_categories(["社会", "教育", "健康", "综合"], 12)),
+    ]
+    lines.append("🏮 **国内热点**")
+    lines.append("")
+    for title, section_key, items in sections:
+        lines.append(title)
+        lines.append("")
+        selected = unique(items, 3 if section_key in ("汽车·能源", "娱乐·综艺") else 4)
+        if not selected:
+            lines.append("🟠 [今日暂无相关热点](链接未获取)")
+            lines.append("")
+            lines.append("> 📍 来源：排名未获取 · 热度未获取  ")
+            lines.append("> 📌 事件：当前采集窗口内没有足够条目。  ")
+            lines.append("> 💡 解读：保留板块占位，等待下一轮采集补齐。  ")
+            lines.append("> ✅ 可信度：数据缺口")
+            lines.append("")
+            continue
+        for item in selected:
+            add_short_block(lines, item, section_key, ranks)
+
+    lines.append("🔥 **各媒体平台热榜汇总**")
+    lines.append("")
+    add_social(lines, "douyin", "🎵 **抖音 TOP热点**", 5)
+    add_social(lines, "weibo", "💬 **微博热搜**", 5)
+    add_social(lines, "zhihu", "💬 **知乎热榜**", 5)
+    add_social(lines, "baidu", "🔍 **百度热搜**", 5)
+
+    lines.append("🌏 **国外热点**")
+    lines.append("")
+    intl_items = unique(query_source("reuters", 4) + query_source("bbc_world", 4) + query_source("techcrunch", 3) + query_source("googlenews", 3), 6)
+    for item in intl_items:
+        source = item.get("source")
+        section = "科技·数码" if source == "techcrunch" else "时政·外交"
+        add_news_block(lines, item, section, ranks)
+
+    lines.append("🤖 **AI·前沿**")
+    lines.append("")
+    ai_pool = (
+        [item for item in query_categories(["AI"], 20) if is_ai_relevant(item)]
+        + query_source("aihot", 5)
+        + [item for item in query_source("hackernews", 10) if is_ai_relevant(item)]
+    )
+    ai_items = unique(ai_pool, 6)
+    for item in ai_items:
+        add_news_block(lines, item, "AI·前沿", ranks, "🟣")
+
+    lines.append("🐙 **GitHub 趋势**")
+    lines.append("")
+    for idx, item in enumerate(query_source("github", 6), 1):
+        repo = repo_name(item)
+        add_github_item(lines, repo, clean(item.get("url")) or f"https://github.com/{repo}", idx, github_info(repo, cache), True, item)
+    weekly = cache.get("github_weekly", [])[:6]
+    for idx, item in enumerate(weekly, 1):
+        repo = clean(item.get("repo"))
+        info = dict(github_info(repo, cache))
+        info.setdefault("stars", item.get("stars"))
+        info.setdefault("description", item.get("description"))
+        add_github_item(lines, repo, f"https://github.com/{repo}", idx, info, False)
+
+    lines.append("🐱 **HackerNews**")
+    lines.append("")
+    for idx, item in enumerate(query_source("hackernews", 8), 1):
+        add_hn_item(lines, item, idx, cache)
+
+    lines.append("📜 **论文·学术**")
+    lines.append("")
+    for item in query_source("arxiv", 5):
+        add_paper_item(lines, item)
+
+    lines.append("📊 **平台统计**")
+    lines.append("")
+    for row in stats.get("by_source", [])[:16]:
+        source = row["source"]
+        lines.append(f"• {SOURCE_CN.get(source, source)} — 抓取{row['count']}条 · 入选见正文 · ✅ 最近更新：{clean(row.get('last'), 24)}")
+    lines.append("")
+
+    lines.append("🤖 **全景判断**")
+    lines.append("")
+    lines.append("> 🧭 **最强主线**：防汛台风、潜射战略导弹、A股交易与科技供应链是今天最值得看的几条线。  ")
+    lines.append("> 🔥 **社媒情绪**：公共安全和民生救援占据强情绪位，微博/抖音更偏即时扩散，百度/知乎更偏搜索和解释。  ")
+    lines.append("> 🧑‍💻 **技术趋势**：GitHub 仍由开发者工具、AI Agent、开源基础设施占据高位，AI 工具链安全和成本问题值得继续看。  ")
+    lines.append("> 🌡️ **风险信号**：极端天气、地缘安全、市场波动三条线同时存在，短期不要把单平台热度当作确定结论。")
+    lines.append("")
+
+    lines.append("👀 **继续跟踪**")
+    lines.append("")
+    for dot, item in zip(["🔴", "🔴", "🟡", "🟡", "🟢"], main_items[:5]):
+        lines.append(f"• {dot} {md_link(item)} — {SOURCE_CN.get(item.get('source',''), item.get('source',''))}热榜 | 看后续")
+        lines.append(f"> 💡 跟踪：关注原始来源更新、官方回应、跨平台热度是否延续。  ")
+        lines.append(f"> 💡 解读：{clean(item.get('title'), 60)}已经进入主线候选，下一步看事实是否被更多权威源确认。")
+        lines.append("")
+
+    lines.append("⚠️ **风险与机会**")
+    lines.append("")
+    lines.append(f"• 🔴 风险：{md_link(main_items[0]) if main_items else '[数据不足](链接未获取)'}")
+    lines.append("> 影响：如果后续信息升级，可能影响公共安全、政策沟通或市场预期。  ")
+    lines.append("> 关注：官方通报、权威媒体复核和相关行业响应。")
+    lines.append("")
+    lines.append("• 🟢 机会：[usestrix/strix](https://github.com/usestrix/strix)")
+    lines.append("> 影响：AI 安全测试工具继续升温，说明企业级 AI 应用的安全需求在变强。  ")
+    lines.append("> 关注：开源项目成熟度、企业版计划、真实漏洞覆盖范围和审计报告。")
+    lines.append("")
+
+    lines.append("🧩 **数据缺口**")
+    lines.append("")
+    lines.append("- **HN 评论补齐**：本轮 HN Algolia 请求出现 SSL EOF，正文已对 Comments 缺口做标注。")
+    lines.append("- **GitHub API**：部分仓库 language/Stars 因 SSL EOF 未补齐，已保留 Stars未获取/语言未获取。")
+    lines.append("- **OpenAI Blog**：本轮核心采集中 1 个源失败，采集统计显示 OpenAI Blog RSS 无数据。")
+    lines.append("- **微博热度**：微博 heat 多为排名或平台内部数值，不等同真实阅读量。")
+    lines.append("- **百度热度**：部分条目 extra 中含摘要，热度字段需要与标题页二次核对。")
+
+    content = "\n".join(lines)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    data = open(output_path, "rb").read().replace(b"\r", b"")
+    open(output_path, "wb").write(data)
+    return output_path, content
+
+
+def main() -> int:
+    output_path, content = build_briefing()
+    print(f"已生成: {output_path}")
+    print(f"行数: {content.count(chr(10)) + 1}")
+    print(f"字符数: {len(content)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

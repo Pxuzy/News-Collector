@@ -1,0 +1,42 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite3
+data/*.bak*
+
+# Generated output and logs
+logs/
+output/
+cron/output/
+
+# One-off generated briefing scripts
+scripts/gen_briefing_v23.py
+scripts/gen_evening_recap.py
+scripts/gen_recap_*.py
+
+# Local tool state
+.ai/
+.codegraph/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
