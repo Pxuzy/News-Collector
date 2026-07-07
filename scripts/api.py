@@ -4,8 +4,9 @@ news-toolkit HTTP API — FastAPI 服务
 
 启动: PYTHONPATH=scripts python -m uvicorn api:app --host 0.0.0.0 --port 8899
 """
-import sys, os, json
-from datetime import datetime, timezone, timedelta
+import os
+import sys
+from datetime import datetime
 from typing import Optional
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -28,9 +29,6 @@ from classifier import classify
 
 app = FastAPI(title="news-toolkit API", version="2.0",
               description="多源新闻聚合查询接口")
-
-CST_OBJ = CST
-
 
 @app.get("/api/news")
 def list_news(
@@ -61,7 +59,8 @@ def get_news(news_id: str, source: str = Query("", description="信源(必填)")
     c = get_db()
     row = c.execute("SELECT * FROM news_items WHERE source=? AND id=?", (source, news_id)).fetchone()
     if not row:
-        c.close(); return JSONResponse({"error": "not found"}, status_code=404)
+        c.close()
+        return JSONResponse({"error": "not found"}, status_code=404)
     # 查正文
     article = c.execute("SELECT * FROM articles WHERE source=? AND id=?", (source, news_id)).fetchone()
     c.close()
@@ -95,7 +94,6 @@ def list_sources():
 @app.get("/api/stats")
 def stats(days: int = Query(7, description="统计天数")):
     """采集统计"""
-    from store import get_stats
     return get_stats(days=days)
 
 
@@ -111,7 +109,7 @@ def health():
     """健康检查"""
     c = get_db()
     total = c.execute("SELECT COUNT(*) FROM news_items WHERE COALESCE(is_duplicate,0)=0").fetchone()[0]
-    start_of_day = datetime.now(CST_OBJ).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    start_of_day = datetime.now(CST).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     today = c.execute(
         "SELECT COUNT(*) FROM news_items WHERE first_seen>=? AND COALESCE(is_duplicate,0)=0",
         (start_of_day,)
@@ -121,7 +119,7 @@ def health():
         "status": "ok", "version": "2.0",
         "items_total": total, "items_today": today,
         "sources_total": len(all_sources()),
-        "timestamp": datetime.now(CST_OBJ).isoformat(),
+        "timestamp": datetime.now(CST).isoformat(),
     }
 
 
@@ -131,9 +129,9 @@ def main():
         print("❌ FastAPI 未安装: pip install fastapi uvicorn")
         return
     import uvicorn
-    print(f"🚀 news-toolkit API v2.0")
-    print(f"   http://localhost:8899/docs  (Swagger)")
-    print(f"   http://localhost:8899/health")
+    print("🚀 news-toolkit API v2.0")
+    print("   http://localhost:8899/docs  (Swagger)")
+    print("   http://localhost:8899/health")
     uvicorn.run(app, host="0.0.0.0", port=8899)
 
 

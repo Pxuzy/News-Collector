@@ -2,8 +2,6 @@
 AI 自动分类与标签提取 — 基于关键词+规则，零依赖
 对每条新闻自动推断 category + tags
 """
-import re
-from typing import Optional
 
 # 分类关键词库 (权重优先)
 CATEGORY_RULES = [

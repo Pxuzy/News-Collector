@@ -2,7 +2,7 @@
 国际新闻源 — HackerNews / BBC / Guardian / Reuters 等
 """
 from typing import Optional
-from core import fetch, fetch_json, rss_to_items, clean_html_text, parse_html, HAS_BS4
+from core import fetch, rss_to_items, parse_html, HAS_BS4
 from sources import register
 
 

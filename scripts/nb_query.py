@@ -14,7 +14,10 @@ news-toolkit 数据库查询桥接脚本
 自动检查: 数据 < 2 小时直接用，否则先跑采集再查。
 输出: JSON 到 stdout，供 Hermes 解析。
 """
-import sys, os, json, subprocess, time
+import sys
+import os
+import json
+import subprocess
 from datetime import datetime, timezone, timedelta
 
 for stream in (sys.stdout, sys.stderr):
@@ -154,11 +157,6 @@ def main():
         s = get_stats(args.days)
         ts = get_timestamp()
         fresh = is_fresh()
-        source_fresh = {}
-        for group_name, srcs in SOURCE_GROUPS.items():
-            source_fresh[group_name] = {}
-            for src in srcs[:5]:  # 只查前5个样例
-                source_fresh[group_name][src] = is_fresh(src)
         result = {
             "status": "ok",
             "db_path": DB,

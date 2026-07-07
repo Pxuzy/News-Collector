@@ -13,7 +13,9 @@ Telegram 新闻简报专用数据接口 v1.0
   python briefing_api.py --groups all              # 全量
   python briefing_api.py --sections                # 按简报7板块输出
 """
-import sys, os, json
+import json
+import os
+import sys
 from datetime import datetime, timezone, timedelta
 
 for stream in (sys.stdout, sys.stderr):
@@ -31,7 +33,7 @@ from store import batch_query, query_by_categories, get_stats, heat_to_score, no
 from sources import get_source_cn, get_group_sources, all_group_names
 from classifier import (
     BRIEFING_CATEGORIES, CATEGORY_MAP,
-    map_to_briefing_category, briefing_section_sort_key
+    map_to_briefing_category
 )
 
 CST = timezone(timedelta(hours=8))
@@ -89,12 +91,12 @@ def is_fresh(source: str = None) -> bool:
                 (source, cutoff)
             ).fetchone()
             return row["cnt"] > 0 if row else False
-        else:
-            row = c.execute(
-                "SELECT COUNT(*) as cnt FROM news_items WHERE last_seen>=? AND COALESCE(is_duplicate,0)=0",
-                (cutoff,)
-            ).fetchone()
-            return row["cnt"] > 0 if row else False
+
+        row = c.execute(
+            "SELECT COUNT(*) as cnt FROM news_items WHERE last_seen>=? AND COALESCE(is_duplicate,0)=0",
+            (cutoff,)
+        ).fetchone()
+        return row["cnt"] > 0 if row else False
     finally:
         c.close()
 
@@ -130,11 +132,7 @@ def get_grouped_news(groups: list[str] = None, days: int = 1, limit: int = 15) -
     """获取多个分组的新闻，返回 {group: [items]}"""
     if groups is None:
         groups = ["domestic", "intl", "ai"]
-    result = {}
-    for g in groups:
-        items = get_group_news(g, days=days, limit=limit)
-        result[g] = items
-    return result
+    return {g: get_group_news(g, days=days, limit=limit) for g in groups}
 
 
 # ─── 简报7板块查询 ───
@@ -187,12 +185,6 @@ def get_overview(days: int = 1) -> dict:
         src_set = set(sources)
         count = sum(1 for s in stats.get("by_source", []) if s["source"] in src_set)
         group_counts[g] = count
-
-    # 简报板块统计
-    section_counts = {}
-    for raw_cat, mapping in CATEGORY_MAP.items():
-        briefing_cat = mapping
-        section_counts[briefing_cat] = section_counts.get(briefing_cat, 0) + 1
 
     # 按分类统计
     by_briefing_cat = {}

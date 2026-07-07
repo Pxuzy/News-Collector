@@ -3,9 +3,12 @@
 """
 多源新闻聚合采集器 v5.0 — 增量采集 + 分类 + 保留策略
 """
-import json, os, sys, time, logging
-from datetime import datetime
+import json
+import os
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.join(PROJECT_DIR, "scripts")
@@ -25,7 +28,7 @@ from store import (
 )
 from sources import all_sources, core_sources
 from classifier import classify_batch
-from structured_log import setup_logger, log_crawl_event, log_summary
+from structured_log import setup_logger, log_crawl_event
 
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'output', 'collector_runs')
 LOG_DIR = os.path.join(PROJECT_DIR, 'logs')

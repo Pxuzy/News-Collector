@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """跨源去重 — 2-gram Jaccard 相似度"""
-import re, json
-from collections import defaultdict
+import re
 
 
 def _norm(t):
@@ -15,18 +14,25 @@ def _ng(s, n=2):
 
 
 def dedup(items, threshold=0.5):
-    used = set(); result = []; saved = 0
+    used = set()
+    result = []
+    saved = 0
     norms = [(_norm(i.get('title','')), i) for i in items]
     for i, (n, _) in enumerate(norms):
-        if i in used or not n: continue
-        cluster = [i]; used.add(i)
+        if i in used or not n:
+            continue
+        cluster = [i]
+        used.add(i)
         for j, (nj, _) in enumerate(norms[i+1:], i+1):
-            if j in used or not nj: continue
+            if j in used or not nj:
+                continue
             ni_ng = _ng(n)
             nj_ng = _ng(nj)
             if ni_ng and nj_ng and len(ni_ng & nj_ng) / len(ni_ng | nj_ng) > threshold:
-                cluster.append(j); used.add(j)
-        if len(cluster) > 1: saved += len(cluster) - 1
+                cluster.append(j)
+                used.add(j)
+        if len(cluster) > 1:
+            saved += len(cluster) - 1
         # 选最佳: 热度高 + 非搜索页优先
         best = max(cluster, key=lambda k: (
             float(re.sub(r'[^\d.]','',str(norms[k][1].get('heat','') or 0)) or 0)

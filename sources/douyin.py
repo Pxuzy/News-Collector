@@ -2,7 +2,7 @@
 抖音热榜 — 三层降级策略
 """
 from typing import Optional
-from core import fetch_json, fetch_via_requests, DEFAULT_UA, HAS_REQUESTS
+from core import DEFAULT_UA, HAS_REQUESTS
 from sources import register
 
 

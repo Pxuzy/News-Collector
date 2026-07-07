@@ -5,7 +5,11 @@
 自动从 news.db 读取实际热榜数据，然后从 API 补齐缺失字段。
 采集器 cron 自动调用此脚本，输出缓存供简报生成使用。
 """
-import sys, os, json, urllib.request, time, sqlite3
+import os
+import json
+import urllib.request
+import time
+import sqlite3
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(SCRIPT_DIR, '..', 'cron', 'output', '_data_gaps_cache.json')
@@ -232,7 +236,7 @@ def main():
             gh_data = fetch_all_github_repos(unique_repos)
         else:
             # 兜底：DB 没数据时 fallback 到已知热榜
-            print(f"[GitHub] DB 无数据，使用已知热榜仓库")
+            print("[GitHub] DB 无数据，使用已知热榜仓库")
             fallback = [
                 'usestrix/strix', 'msitarzewski/agency-agents',
                 'browser-use/video-use', 'HKUDS/Vibe-Trading',

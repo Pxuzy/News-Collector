@@ -2,11 +2,14 @@
 """
 正文提取 v3 — trafilatura + requests双引擎 + 降级
 """
-import sys, os, re, time
+import sys
+import os
+import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(__file__))
-from core import PROXY_CONFIG, DEFAULT_UA, fetch_via_requests
+from core import DEFAULT_UA, fetch_via_requests
 from store import _db as get_db, update_summary
 
 # 不需要提取正文的源
@@ -120,7 +123,8 @@ def run(batch=30, workers=4):
                     "INSERT OR IGNORE INTO articles(id,source,title,url,content,summary,fetched_at) VALUES(?,?,?,?,?,?,?)",
                     (r['id'], r['source'], r['title'][:500], r['url'], body, summary,
                      __import__('datetime').datetime.now().isoformat()))
-                conn2.commit(); conn2.close()
+                conn2.commit()
+                conn2.close()
                 update_summary(r['source'], r['id'], summary)
                 ok += 1
                 print(f"  ✅ [{r['source']}] {r['title'][:40]}... {len(body)}字 ({engine_label})", flush=True)

@@ -3,7 +3,9 @@
 Wrapper: 静默运行 news-toolkit 采集器（全量50源），只存库不发送。
 no_agent=true 用，直接执行 multi_source_news.py。
 """
-import subprocess, sys, os
+import subprocess
+import sys
+import os
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -19,17 +21,17 @@ result = subprocess.run(
 lines = result.stdout.strip().split("\n")
 
 # 统计成功/失败源数
-ok_count = sum(1 for l in lines if '"status": "ok"' in l or '✅' in l)
-fail_count = sum(1 for l in lines if '"status": "failed"' in l or '❌' in l or '🔴' in l)
-error_count = sum(1 for l in lines if '[ERROR]' in l or '[WARNING]' in l)
+ok_count = sum(1 for line in lines if '"status": "ok"' in line or '✅' in line)
+fail_count = sum(1 for line in lines if '"status": "failed"' in line or '❌' in line or '🔴' in line)
+error_count = sum(1 for line in lines if '[ERROR]' in line or '[WARNING]' in line)
 
 # 打印所有失败/错误行（最多30行）
-error_lines = [l for l in lines if '[ERROR]' in l or '[WARNING]' in l or '❌' in l or '🔴' in l]
+error_lines = [line for line in lines if '[ERROR]' in line or '[WARNING]' in line or '❌' in line or '🔴' in line]
 for el in error_lines[:30]:
     print(el)
 
 # 打印采集汇总行
-summary_lines = [l for l in lines if '采集完成' in l]
+summary_lines = [line for line in lines if '采集完成' in line]
 for sl in summary_lines:
     print(sl)
 

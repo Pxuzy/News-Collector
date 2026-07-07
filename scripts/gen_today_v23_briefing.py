@@ -372,7 +372,7 @@ def github_profile(repo: str, desc: str, language: str, topics: list[str] | None
     if contains_any(blob, ["security", "pentest", "penetration", "vulnerab", "red-team", "hacking", "ctf"]):
         return {
             "summary": "安全测试/漏洞发现工具。",
-            "purpose": f"从简介看，它面向安全测试或 AI 应用风险排查，核心价值是把漏洞发现、验证或修复流程工具化。适合安全工程师、红队和正在上线 AI 应用的团队先做小范围试用。",
+            "purpose": "从简介看，它面向安全测试或 AI 应用风险排查，核心价值是把漏洞发现、验证或修复流程工具化。适合安全工程师、红队和正在上线 AI 应用的团队先做小范围试用。",
             "why": f"安全自动化和 AI 安全是近期开发者关注高地，进入 GitHub {label}说明该方向正在被快速验证。",
             "follow": "漏洞覆盖范围、误报率、沙箱隔离、报告质量、是否有安全审计和企业场景案例。",
         }
@@ -792,7 +792,7 @@ def build_briefing() -> tuple[str, str]:
     lines.append("")
     for dot, item in zip(["🔴", "🔴", "🟡", "🟡", "🟢"], main_items[:5]):
         lines.append(f"• {dot} {md_link(item)} — {SOURCE_CN.get(item.get('source',''), item.get('source',''))}热榜 | 看后续")
-        lines.append(f"> 💡 跟踪：关注原始来源更新、官方回应、跨平台热度是否延续。  ")
+        lines.append("> 💡 跟踪：关注原始来源更新、官方回应、跨平台热度是否延续。  ")
         lines.append(f"> 💡 解读：{clean(item.get('title'), 60)}已经进入主线候选，下一步看事实是否被更多权威源确认。")
         lines.append("")
 

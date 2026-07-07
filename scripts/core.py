@@ -3,11 +3,13 @@
 """
 核心模块 — 借鉴 newsnow (ourongxing) 的 fetch + type 层
 """
-import json, re, time, os
+import json
+import re
+import time
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
 
 CST = timezone(timedelta(hours=8))
 
@@ -119,17 +121,17 @@ def rss_to_items(url: str, source_name: str, icon: str, limit: int = 10,
         headers.update(extra_headers)
     html = fetch_via_requests(url, headers)
     if html.startswith('ERROR'):
-        return None, f"RSS获取失败"
+        return None, "RSS获取失败"
     feed = feedparser.parse(html)
     now = datetime.now(timezone.utc)
     items = []
     for e in feed.entries[:limit]:
-        t, l = e.get('title', ''), e.get('link', '')
+        title, link = e.get('title', ''), e.get('link', '')
         pub = e.get('published_parsed')
         if pub and datetime.fromtimestamp(__import__('time').mktime(pub), tz=timezone.utc) < now - timedelta(hours=hours):
             continue
-        if t:
-            items.append({"id": l or t, "title": t, "url": l or '',
+        if title:
+            items.append({"id": link or title, "title": title, "url": link or '',
                           "heat": '', "extra": {"source": f"{icon}{source_name}"}})
     return (items[:limit], None) if items else (None, "RSS无数据")
 

@@ -1,7 +1,8 @@
 """
 国内热点源 — 百度/知乎/头条/微博/澎湃/贴吧/虎扑/IT之家/凤凰/36氪/腾讯/V2EX/少数派/豆瓣
 """
-import json, re, time
+import json
+import re
 from typing import Optional
 from core import fetch, fetch_json, fetch_via_requests, clean_html_text, parse_html, HAS_BS4, DEFAULT_UA
 from sources import register

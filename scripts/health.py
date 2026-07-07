@@ -3,8 +3,9 @@
 """
 健康看板 v2 — 各源采集状态 + 增量统计 + DB健康
 """
-import sys, os, json
-from datetime import datetime, timezone, timedelta
+import sys
+import os
+from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from store import _db as get_db, CST
 
@@ -48,7 +49,6 @@ def health_report(days=1):
     lines.append("| 源 | 运行 | ✅成功 | ❌失败 | 平均耗时 |\n")
     lines.append("|---|---|---|---|---|\n")
     for s in sources:
-        ok_icon = "✅" if s['ok'] > 0 and s['fail'] == 0 else "⚠️" if s['ok'] > 0 else "❌"
         lines.append(f"| {s['source']} | {s['runs']} | {s['ok']} | {s['fail']} | {s['avg_ms'] or '-'}ms |\n")
 
     lines.append("\n### 信源产出\n")

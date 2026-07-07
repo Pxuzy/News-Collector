@@ -3,8 +3,9 @@
 """
 新闻查询 CLI — python query.py --keyword "A股" --days 7 --source baidu
 """
-import argparse, sys, os
-from datetime import datetime
+import argparse
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from store import query, get_stats
 

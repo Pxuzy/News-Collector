@@ -1,7 +1,10 @@
 """
 结构化日志 — JSON 格式输出, 方便 logstash/filebeat 等工具消费
 """
-import json, os, logging, sys
+import json
+import os
+import logging
+import sys
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -55,7 +58,7 @@ def setup_logger(name: str = "news-toolkit", log_dir: str = None,
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
         fh = logging.FileHandler(
-            os.path.join(log_dir, f"collector.jsonl"),
+            os.path.join(log_dir, "collector.jsonl"),
             encoding='utf-8'
         )
         fh.setFormatter(formatter)

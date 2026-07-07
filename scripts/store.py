@@ -2,7 +2,11 @@
 """
 持久化存储层 v5.0 — SQLite + FTS5 + 保留策略 + 分类
 """
-import json, os, sqlite3, re, hashlib
+import json
+import os
+import sqlite3
+import re
+import hashlib
 from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -163,7 +167,8 @@ def init_db():
             "UPDATE news_items SET heat_score=?, canonical_key=? WHERE rowid=?",
             (heat_to_score(row["heat"]), _canonical_key(row["title"], row["url"]), row["rowid"])
         )
-    c.commit(); c.close()
+    c.commit()
+    c.close()
 
 
 def _fingerprint(title, url):
@@ -206,7 +211,9 @@ def _published_at(item: dict) -> str:
 
 def upsert_news(items, source):
     """插入/更新新闻, 返回 (新条数, 更新条数)  — try/finally 保底关闭连接"""
-    now = _now(); new = 0; updated = 0
+    now = _now()
+    new = 0
+    updated = 0
     c = _db()
     try:
         for item in items:
@@ -409,7 +416,8 @@ def query(keyword=None, days=None, source=None, category=None, limit=50, offset=
     rows = c.execute(f"SELECT * FROM news_items WHERE {w} ORDER BY heat_score DESC, last_seen DESC LIMIT ? OFFSET ?",
                      params+[limit, offset]).fetchall()
     total = c.execute(f"SELECT COUNT(*) FROM news_items WHERE {w}", params).fetchone()[0]
-    c.close(); return [dict(r) for r in rows], total
+    c.close()
+    return [dict(r) for r in rows], total
 
 
 def batch_query(sources: list[str], days: int = 1, limit: int = 15) -> dict[str, list[dict]]:
@@ -532,7 +540,8 @@ def fts_search(query, limit=20):
 
 def get_stats(days=7):
     """增强统计 — 含分类分布和增量统计"""
-    c = _db(); cutoff = (datetime.now(CST)-timedelta(days=days)).isoformat()
+    c = _db()
+    cutoff = (datetime.now(CST)-timedelta(days=days)).isoformat()
     by_source = [dict(r) for r in c.execute(
         "SELECT source,COUNT(*) as count,MAX(last_seen) as last FROM news_items WHERE last_seen>=? AND COALESCE(is_duplicate,0)=0 GROUP BY source ORDER BY count DESC",
         (cutoff,)).fetchall()]

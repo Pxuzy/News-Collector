@@ -3,7 +3,9 @@
 参考 newsnow (ourongxing) 的 API 端点实现
 """
 from typing import Optional
-import json, re, time
+import json
+import re
+import time
 from core import fetch_json, fetch_via_requests, rss_to_items, DEFAULT_UA
 from sources import register
 
@@ -198,7 +200,7 @@ def source_nowcoder() -> Tuple[Optional[list[dict]], Optional[str]]:
             url = f"https://www.nowcoder.com/discuss/{kid}"
             nid = kid
         else:
-            url = f"https://www.nowcoder.com/"
+            url = "https://www.nowcoder.com/"
             nid = kid
         items.append({"id": f"nc_{nid}", "title": title, "url": url,
                       "heat": '', "category": "科技",

@@ -9,8 +9,11 @@
     python watch.py --keywords "新能源" --min-heat 1000000
     python watch.py --register "新能源,降息"   # 注册到 Hermes cron
 """
-import json, re, sys, os, argparse
-from datetime import datetime, timezone, timedelta
+import json
+import sys
+import os
+import argparse
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from store import _db as get_db, CST, heat_to_score
@@ -89,7 +92,7 @@ def generate_alert(results, keywords, max_items=10):
         kw_str += f' +{len(keywords)-8}个'
     
     lines = [
-        f"🚨 **新闻监控告警**",
+        "🚨 **新闻监控告警**",
         f"📅 {now}",
         f"🔍 监控关键词: {kw_str}",
         f"📊 匹配: {len(results)} 条",
@@ -108,7 +111,7 @@ def generate_alert(results, keywords, max_items=10):
         lines.append(f'**链接**: [{r["title"][:30]}...]({r["url"]})')
         lines.append('')
     
-    lines.append(f'---')
+    lines.append('---')
     lines.append(f'共 {len(results)} 条匹配 · 展示前 {min(len(results), max_items)} 条')
     
     return '\n'.join(lines)
@@ -150,7 +153,7 @@ def main():
             json.dump(keywords, f, ensure_ascii=False, indent=2)
         print(f"✅ 已注册 {len(keywords)} 个监控关键词到 {KEYWORDS_FILE}")
         print(f"   关键词: {', '.join(keywords)}")
-        print(f"   盘中监控 (9:00-15:00 每30min) 自动生效")
+        print("   盘中监控 (9:00-15:00 每30min) 自动生效")
         return
     
     # 加载关键词

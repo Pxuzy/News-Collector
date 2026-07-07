@@ -10,9 +10,9 @@ from sources import register
 def source_wallstreetcn() -> tuple[Optional[list[dict]], Optional[str]]:
     data = fetch_json("https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=30")
     if data and 'data' in data:
-        items = [{"id": l.get('id', ''), "title": l.get('title', ''), "url": l.get('content_url', ''),
+        items = [{"id": live.get('id', ''), "title": live.get('title', ''), "url": live.get('content_url', ''),
                   "heat": '', "extra": {"source": "📈华尔街见闻"}}
-                 for l in data.get('data', {}).get('items', []) if l.get('title', '')]
+                 for live in data.get('data', {}).get('items', []) if live.get('title', '')]
         return items, None
     # 热文降级
     data2 = fetch_json("https://api-one.wallstcn.com/apiv1/content/articles/hot?period=all")
