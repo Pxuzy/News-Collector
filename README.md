@@ -36,11 +36,19 @@ News-Collector/
 │   └── references/               v23 格式、校验、数据字段说明
 ├── data/news.db                  SQLite 数据库
 ├── output/                       生成简报、采集报告和缓存
+├── docs/file-layout.md           文件架构与整理边界说明
+├── docs/setup.md                 新环境安装、运行和排障说明
+├── docs/docker.md                Docker 部署说明
+├── Dockerfile                    容器镜像构建文件
+├── docker-compose.yml            Docker Compose 服务定义
 ├── config/watch_keywords.json    监控关键词
 └── requirements.txt
 ```
 
 ## 常用命令
+
+新机器或新 agent 接手时，先看 `docs/setup.md`。
+Docker 部署见 `docs/docker.md`。
 
 ```bash
 python multi_source_news.py --parallel 8 --prune
@@ -51,7 +59,18 @@ python scripts/validate_briefing.py output/news-YYYY-MM-DD.md
 python scripts/nb_query.py --status
 ```
 
+## Docker
+
+```bash
+docker compose build
+docker compose run --rm app python multi_source_news.py --source baidu,zhihu --force --parallel 2
+docker compose run --rm app python scripts/generate_briefing.py --skip-collect
+docker compose up -d api
+```
+
 ## 新文件归类规则
+
+更完整的目录边界见 `docs/file-layout.md`。
 
 - 新平台采集源放到 `sources/`，并在模块内用 `@register` 注册。
 - 数据库 schema、写入、查询、去重状态放到 `scripts/store.py`。

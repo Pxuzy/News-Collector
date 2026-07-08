@@ -1,0 +1,41 @@
+name: news-collector
+
+x-news-collector-common: &news-collector-common
+  build: .
+  image: news-collector:latest
+  working_dir: /app
+  environment:
+    PYTHONIOENCODING: utf-8
+    PYTHONUNBUFFERED: "1"
+    NEWS_COLLECTOR_ROOT: /app
+    PYTHONPATH: /app/scripts:/app
+    TZ: Asia/Shanghai
+  volumes:
+    - ./data:/app/data
+    - ./output:/app/output
+    - ./logs:/app/logs
+    - ./cron/output:/app/cron/output
+
+services:
+  app:
+    <<: *news-collector-common
+    command: ["python", "-m", "compileall", "-q", "multi_source_news.py", "scripts", "sources"]
+
+  api:
+    <<: *news-collector-common
+    command:
+      - sh
+      - -c
+      - python -c "from store import init_db; init_db()" && python scripts/api.py
+    ports:
+      - "8899:8899"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8899/health', timeout=5).read()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
