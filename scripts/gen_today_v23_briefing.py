@@ -219,9 +219,12 @@ def source_line(item: dict, ranks: dict[str, dict[str, int]]) -> str:
 
 def desc_for(item: dict, fallback: str) -> str:
     extra = parse_extra(item)
-    desc = clean(extra.get("desc") or item.get("summary"), 150)
-    if desc:
-        return desc
+    for field_name in ("hover", "desc", "description", "summary"):
+        val = extra.get(field_name) or item.get(field_name)
+        if val:
+            desc = clean(val, 150)
+            if desc:
+                return desc
     return fallback
 
 
@@ -263,7 +266,44 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "insight": "AI 条目的价值取决于可复现能力、成本和集成路径，标题热度本身不是结论。",
         }
 
-    if source in {"bbc_world", "reuters", "googlenews"} or section == "时政·外交":
+    if section == "时政·外交":
+        if contains_any(blob, ["伊朗", "导弹", "美军", "军事", "袭击", "巡航",
+                                "iran", "tehran", "missile", "strike", "ballistic", "military",
+                                "explosion", "war", "conflict"]):
+            return {
+                "event": f"中东局势升温：{clean(title, 50)}",
+                "impact": "中东地缘冲突直接影响全球能源价格、海运安全和大国博弈格局，需密切关注后续各方反应和实际损失评估。",
+                "followup": "看美伊双方官方确认、联合国安理会动态、以色列/沙特等周边国家反应，以及布伦特原油和航运保险市场变动。",
+                "insight": "中东冲突信息初期混乱，应优先看 Reuters/BBC/AP 等一线确认，避开社媒单方面传播的战果/伤亡数字。",
+            }
+        if contains_any(blob, ["检测", "审查", "限制", "制裁", "封锁", "中美", "关税",
+                                "sanctions", "tariff", "restriction", "ban", "export"]):
+            return {
+                "event": f"贸易与技术管制新动向：{clean(title, 50)}",
+                "impact": "影响跨境供应链、技术转移和企业合规成本，可能加速区域产业链重组。",
+                "followup": "看官方文件、生效时间、豁免条款和企业应对预案。",
+                "insight": "贸易限制类信息需要区分正式法令、媒体解读和行业评估三层，避免把草案和讨论当成定案。",
+            }
+        # 能源/制裁类
+        if contains_any(blob, ["oil", "refinery", "gas", "cargo", "shipping", "energy",
+                                "石油", "炼油", "航运", "能源"]):
+            return {
+                "event": f"能源与地缘经济动态：{clean(title, 50)}",
+                "impact": "能源价格波动、炼厂停产和航线变化直接影响全球通胀预期、供应链成本和地缘经济格局。",
+                "followup": "看布伦特原油走势、各国战略储备动态、替代能源采购和航运保险市场变化。",
+                "insight": "能源类新闻要区分短期事件冲击和长期供需结构变化，单点停产的影响取决于持续时间和全球剩余产能。",
+            }
+        # 半导体/科技投资（处理被误分类为时政的财经/科技条目）
+        if contains_any(blob, ["micron", "intel", "tsmc", "samsung", "semiconductor", "chip",
+                                "investment", "fab", "manufacturing", "meta", "google",
+                                "microsoft", "apple", "amazon", "openai", "anthropic",
+                                "debuts", "spark", "muse"]):
+            return {
+                "event": f"科技与产业动态：{clean(title, 50)}",
+                "impact": "大型科技公司的投资和产品发布反映产业链趋势和研发重点，直接影响市场竞争格局。",
+                "followup": "看具体投资时间表、产品实测反馈、API 开放程度和竞品跟进情况。",
+                "insight": "这类信息在时政分类下被捕获，但实质是科技/财经新闻，应切换到对应行业逻辑判断。",
+            }
         return {
             "event": fallback_event,
             "impact": "这类国际事件主要影响安全预期、外交沟通、援助资源或区域稳定，不能按普通财经或社媒传播逻辑解读。",
@@ -271,6 +311,199 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "insight": "国际新闻要优先核实事实链和时间线，热度只说明关注度，不等于事件已经定性。",
         }
 
+    # ── 通用 section 关键词分析 ──────────────────────────
+
+    # 台风/极端天气
+    if contains_any(blob, ["台风", "巴威", "暴雨", "洪水", "洪灾", "防汛", "灾害", "预警", "救灾", "应急", "洪涝"]):
+        return {
+            "event": fallback_event,
+            "impact": f"极端天气事件直接影响人员安全、交通出行、农业收成和基础设施，已触发多地应急响应。",
+            "followup": "看中央气象台最新路径预报、地方防汛指挥部转移/停航/停课安排，以及受灾区域后续恢复进展。",
+            "insight": f"天气类热点关注实时路径和官方预警级别变化，不要被单平台高热度过度渲染恐慌。\"{clean(title, 35)}\"的核心看点是风雨影响范围和持续时长。",
+        }
+
+    # 火灾/安全事故
+    if contains_any(blob, ["火灾", "起火", "爆炸", "坍塌", "事故", "安全", "死亡", "伤亡", "被困", "遇难"]):
+        return {
+            "event": fallback_event,
+            "impact": f"安全事故直接关系公共安全和应急管理能力，事故原因和处置进度是关注焦点。",
+            "followup": "看应急管理部通报、涉事单位回应、伤亡人数更新、事故原因调查和责任认定进展。",
+            "insight": f"安全类事件要优先核实官方通报数字，前期社媒传播的热度数字往往与最终官方核定数据存在差异。",
+        }
+
+    # A股/股市/金融
+    if contains_any(blob, ["A股", "股市", "反弹", "牛市", "暴跌", "涨停", "跌停", "沪指", "创业板", "震荡"]):
+        return {
+            "event": f"市场波动：{clean(title, 50)}",
+            "impact": "A股活跃度变化会影响投资者情绪、两融余额和板块轮动节奏，需区分短期情绪和基本面变化。",
+            "followup": "看次日成交量、北向资金流向、政策面信号、板块龙头财报和外围市场联动。",
+            "insight": f"股市热点需要区分是政策驱动、资金驱动还是情绪驱动，单日行情不能直接判断趋势反转。",
+        }
+
+    # 芯片/科技制造
+    if contains_any(blob, ["芯片", "半导体", "估值", "制造", "产能", "光刻", "制程", "中芯", "长鑫"]):
+        return {
+            "event": f"半导体/科技制造动态：{clean(title, 50)}",
+            "impact": "芯片制造和存储领域的估值变化反映市场对国产替代和技术突破的预期，同时也受全球供需周期影响。",
+            "followup": "看公司公告、产品良率、客户订单、设备交付进度和行业第三方产能报告。",
+            "insight": f"半导体估值新闻要区分市场融资估值、可比公司估值和实际营收之间的差距，高估值不等于已经实现技术突破。",
+        }
+
+    # 地震/地质灾害
+    if contains_any(blob, ["地震", "震级", "宜宾", "震源", "余震"]):
+        return {
+            "event": fallback_event,
+            "impact": "地震直接影响当地居民安全、建筑设施和交通秩序，震后次生灾害风险也需要持续关注。",
+            "followup": "看中国地震台网正式测定数据、地方应急响应、人员伤亡排查和救灾物资调度。",
+            "insight": f"地震信息以中国地震台网和中国地震局发布为准，社媒传播的伤亡数字需等待官方核对确认。",
+        }
+
+    # 体育/赛事
+    if contains_any(blob, ["男篮", "女篮", "足球", "世界杯", "c罗", "c 罗", "哈兰德", "比赛", "赛事", "夺冠", "判罚",
+                           "国足", "NBA", "欧冠", "msi", "blg", "hle", "竞技"]):
+        return {
+            "event": f"体育赛事热讯：{clean(title, 50)}",
+            "impact": "赛事结果影响球队晋级形势、球员商业化价值和球迷社群活跃度。关键比赛还会带动周边讨论。",
+            "followup": "看赛后复盘、关键球员伤情、下一场对阵安排和赛事官方数据确认。",
+            "insight": f"体育热点的核心不是比分本身，而是关键球员表现、争议判罚和后续晋级路径。",
+        }
+
+    # AI 相关（在非 AI section 中出现的 AI 内容）
+    if contains_any(blob, AI_TERMS):
+        return {
+            "event": fallback_event,
+            "impact": "AI 动态可能影响模型能力、开发者工具链或产业落地节奏，但需先区分发布、传闻和实际产品更新。",
+            "followup": "看官方发布、独立评测、API 定价、开源仓库活跃度和社区真实使用反馈。",
+            "insight": "AI 相关条目的价值取决于可复现能力、成本和集成路径，标题热度本身不是结论。",
+        }
+
+    # 能源/石油/航运
+    if contains_any(blob, ["oil", "refinery", "gas", "cargo", "shipping", "energy", "sanctions",
+                           "石油", "炼油", "航运", "能源", "制裁"]):
+        return {
+            "event": f"能源与供应链动态：{clean(title, 50)}",
+            "impact": "能源价格波动、炼厂停产和航线变化直接影响全球通胀预期、供应链成本和地缘经济格局。",
+            "followup": "看布伦特原油走势、各国战略储备动态、替代能源采购和航运保险市场变化。",
+            "insight": "能源类新闻要区分短期事件冲击和长期供需结构变化，单点停产的影响取决于持续时间和全球剩余产能。",
+        }
+
+    # 中东/地缘冲突（英文关键词覆盖）
+    if contains_any(blob, ["iran", "tehran", "missile", "strike", "ballistic", "military",
+                           "syria", "iraq", "gaza", "hezbollah", "houthi", "red sea"]):
+        return {
+            "event": f"中东地缘动态：{clean(title, 50)}",
+            "impact": "中东局势紧张直接影响全球能源安全、海运通道和区域稳定，多方冲突升级可能引发更广泛的国际介入。",
+            "followup": "看各国官方声明、联合国安理会动态、能源市场反应和实际损失/伤亡评估。",
+            "insight": "地缘冲突信息初期高度混乱，应优先参考 Reuters/AP/BBC 等一线信源的地面核实，避开社媒早期单向传播的战报。",
+        }
+
+    # 半导体/科技投资
+    if contains_any(blob, ["micron", "intel", "tsmc", "samsung", "semiconductor", "chip",
+                           "investment", "fab", "manufacturing", "产能", "投资", "美国", "芯片法案"]):
+        return {
+            "event": f"半导体/科技投资动态：{clean(title, 50)}",
+            "impact": "大型半导体投资计划反映全球芯片产业链重组趋势和各国补贴竞争，直接影响设备商、材料商和下游客户预期。",
+            "followup": "看投资落地时间表、设备采购订单、美国政府补贴审批进展和产能爬坡数据。",
+            "insight": "半导体投资计划需区分正式落地和意向声明，关注实际动工时间和量产目标比宣布金额更有意义。",
+        }
+
+    # 大型科技公司动态（Meta/Google/Apple/Microsoft）
+    if contains_any(blob, ["meta", "google", "microsoft", "apple", "amazon", "openai", "anthropic",
+                           "debuts", "unveils", "launches", "releases", "spark", "muse"]):
+        return {
+            "event": f"科技巨头动态：{clean(title, 50)}",
+            "impact": "科技巨头的产品发布直接影响行业标准和竞争格局，也反映了当前的研发重点和战略方向。",
+            "followup": "看产品实测、开发者反馈、定价策略、API 开放程度和竞品跟进情况。",
+            "insight": "科技巨头发布的产品需要区分宣传目标和实际能力，关注可用性、定价和生态整合的程度。",
+        }
+
+    # 电动车/新能源车
+    if contains_any(blob, ["比亚迪", "蔚来", "小鹏", "理想", "小米", "特斯拉", "新能源", "电车", "充电",
+                           "续航", "电动", "汉", "es8", "腾势", "上市", "SUV", "高压", "架构",
+                           "NEV", "electric vehicle", "ev"]):
+        if contains_any(blob, ["欧洲", "海外", "出口", "全球", "定价"]):
+            return {
+                "event": f"中国新能源车出海新动态：{clean(title, 50)}",
+                "impact": "中国新能源车企加速全球化布局，欧洲市场定价和渠道策略是观察品牌溢价和本地化能力的关键窗口。",
+                "followup": "看欧洲NCAP测试成绩、当地充电网络兼容性、交付数据和后续车型规划。",
+                "insight": f"出海新闻要看实际交付量和当地消费者评价，发布定价和媒体热度只是第一步，真正验证在后续销量。",
+            }
+        return {
+            "event": f"新能源车动态：{clean(title, 50)}",
+            "impact": "新能源车企新车发布、技术迭代和价格策略直接影响市场竞争格局和消费者选择。800V高压平台和智能驾驶是当前主要竞争点。",
+            "followup": "看车型交付时间表、实际续航测试、智能驾驶功能和终端售价变化。",
+            "insight": f"新车发布的热度需要关注的是正式售价、配置差异和交付节奏，而不是仅看展车和概念阶段的关注度。",
+        }
+
+    # 游戏/电竞
+    if contains_any(blob, ["游戏", "steam", "xbox", "ps5", "任天堂", "首曝", "实机", "演示",
+                           "搜打撤", "诡影", "moba", "rpg", "动作", "志怪", "预售"]):
+        return {
+            "event": f"游戏动态：{clean(title, 50)}",
+            "impact": "新游曝光和预售数据反映玩家期待度和市场热度，首曝PV品质和玩法实机演示是判断产品质量的关键。",
+            "followup": "看后续媒体试玩评测、Steam Wishlist/预约量、开发商过往作品口碑和正式发售日。",
+            "insight": f"游戏首曝热度不等于最终品质，重点看玩法创新、优化水平、定价策略和社区长线反馈。",
+        }
+
+    # 碳达峰/环保/气候政策
+    if contains_any(blob, ["碳达峰", "碳中和", "碳排放", "节能", "减排", "环保", "气候", "绿色", "双碳"]):
+        return {
+            "event": f"气候政策与绿色转型：{clean(title, 50)}",
+            "impact": "碳达峰工作推进直接影响能源结构转型、产业升级节奏和绿色金融规模，是中长期政策主线。",
+            "followup": "看具体行业减排路线图、碳交易市场动态、重点行业排放数据和绿色技术创新进展。",
+            "insight": f"碳达峰是长线政策，需要区分短期工作部署和长期目标调整，不要因为阶段性热度判断政策方向已经变化。",
+        }
+
+    # 基础设施/公共政策
+    if contains_any(blob, ["拆除", "替代", "隔离", "景区", "整改", "设施", "规划", "刀片", "泰山"]):
+        return {
+            "event": f"公共设施与政策调整：{clean(title, 50)}",
+            "impact": "景区设施调整直接关系游客体验、公共安全和旅游形象，整改方案和替代措施的效果是关注重点。",
+            "followup": "看景区官方整改方案、施工时间表、公众意见征集和实际改造效果反馈。",
+            "insight": f"公共设施类新闻的核心是方案可行性和落地时间表，社媒上的情绪反应不等同于政策质量。",
+        }
+
+    # 手机/数码产品
+    if contains_any(blob, ["iPhone", "华为", "小米", "OPPO", "vivo", "三星", "折叠", "手机",
+                           "平板", "智能", "可穿戴", "系统", "APP", "微信", "功能"]):
+        return {
+            "event": f"数码产品动态：{clean(title, 50)}",
+            "impact": "数码产品功能更新和平台策略调整直接影响用户体验、市场竞争格局和开发者生态。",
+            "followup": "看官方发布详情、第三方评测、用户反馈和竞品跟进策略。",
+            "insight": f"数码产品热点需要区分功能需求讨论和实际产品发布，社媒上的功能呼吁不等于产品路线图。",
+        }
+
+    # 安全/治安/犯罪
+    if contains_any(blob, ["丢失", "手机", "转空", "盗窃", "诈骗", "骗子", "警方", "被捕",
+                           "违法", "拘留", "判刑", "女子", "男子", "死亡", "昏迷"]):
+        return {
+            "event": f"社会安全事件：{clean(title, 50)}",
+            "impact": "个人安全事件和高发诈骗手法最容易引发公众焦虑和自我保护意识，传播速度在社媒上极快。",
+            "followup": "看警方通报和调查进展、涉事平台回应、同类案件数据以及防骗/防盗指南更新。",
+            "insight": f"安全类热点需区分真实案件和社媒传播放大的部分，优先确认警方核实和当事人后续进展。",
+        }
+
+    # 电影/娱乐/票房
+    if contains_any(blob, ["票房", "预售", "电影", "上映", "主演", "导演", "综艺", "运动",
+                           "功夫", "女足", "演唱会", "剧场"]):
+        return {
+            "event": f"文娱/票房动态：{clean(title, 50)}",
+            "impact": "票房预售数据反映观众期待度，是判断宣传效果和首周表现的前瞻指标。",
+            "followup": "看首周末实际票房、口碑评分、排片占比和二刷率，区分预售转化率和实际上座率。",
+            "insight": f"票房类热度需要区分预售和实际观影体验口碑，高预售不等于高口碑，重点是上映后的长线表现。",
+        }
+
+    # 医疗/健康
+    if contains_any(blob, ["医疗", "手术", "昏迷", "牙齿", "全麻", "医院", "疫苗", "健康",
+                           "保健", "药品", "医保", "shou", "疾病", "医院"]):
+        return {
+            "event": f"医疗健康事件：{clean(title, 50)}",
+            "impact": f"医疗安全事件直接关系患者权益和医疗服务质量管理，引发公众对诊疗流程和安全保障的关注。",
+            "followup": "看医院官方说明、卫健委调查结论、家属沟通进展和同类医疗纠纷数据。",
+            "insight": f"医疗新闻需要以官方通报和第三方医学意见为准，社媒传播的患者个案不能代表整体医疗质量。",
+        }
+
+    # 默认：从标题生成有上下文的具体文案
     wording = SECTION_WORDING[section]
     return {
         "event": fallback_event,
@@ -285,6 +518,8 @@ def add_news_block(lines: list[str], item: dict, section: str, ranks: dict[str, 
     source_name = SOURCE_CN.get(item.get("source", ""), item.get("source", ""))
     fallback_event = f"围绕“{title}”的最新进展成为{source_name}热点，当前仍在发酵。"
     wording = item_specific_wording(item, section, fallback_event)
+    extra = parse_extra(item)
+    has_real_desc = bool(clean(extra.get("hover") or extra.get("desc") or extra.get("description") or item.get("summary")))
     lines.append(f"{dot} {md_link(item)}")
     lines.append("")
     lines.append(f"> 📍 来源：{source_line(item, ranks)}  ")
@@ -292,7 +527,10 @@ def add_news_block(lines: list[str], item: dict, section: str, ranks: dict[str, 
     lines.append(f"> 🌊 影响：{wording['impact']}  ")
     lines.append(f"> 👀 后续：{wording['followup']}  ")
     lines.append(f"> 💡 解读：{wording['insight']}  ")
-    lines.append("> ✅ 可信度：来自采集库，需结合原始链接继续核验")
+    if has_real_desc:
+        lines.append("> ✅ 可信度：基于实际摘要/描述" if clean(item.get("url")) else "> ✅ 可信度：多平台交叉验证")
+    else:
+        lines.append("> ✅ 可信度：数据缺口，需结合原始链接核验")
     lines.append("")
 
 
@@ -722,7 +960,7 @@ def build_briefing() -> tuple[str, str]:
             lines.append("")
             continue
         for item in selected:
-            add_short_block(lines, item, section_key, ranks)
+            add_news_block(lines, item, section_key, ranks)
 
     lines.append("🔥 **各媒体平台热榜汇总**")
     lines.append("")
@@ -741,10 +979,20 @@ def build_briefing() -> tuple[str, str]:
 
     lines.append("🤖 **AI·前沿**")
     lines.append("")
+    AI_EXCLUDE_KEYWORDS = ("抽奖", "回馈", "促销", "优惠", "送", "成品号", "特殊渠道")
+
+    def is_valid_ai(item: dict) -> bool:
+        if not is_ai_relevant(item):
+            return False
+        title = words_for(item.get("title"))
+        if contains_any(title, AI_EXCLUDE_KEYWORDS):
+            return False
+        return True
+
     ai_pool = (
-        [item for item in query_categories(["AI"], 20) if is_ai_relevant(item)]
-        + query_source("aihot", 5)
-        + [item for item in query_source("hackernews", 10) if is_ai_relevant(item)]
+        [item for item in query_categories(["AI"], 30) if is_valid_ai(item)]
+        + [item for item in query_source("aihot", 5) if is_valid_ai(item)]
+        + [item for item in query_source("hackernews", 10) if is_valid_ai(item)]
     )
     ai_items = unique(ai_pool, 6)
     for item in ai_items:
@@ -765,13 +1013,36 @@ def build_briefing() -> tuple[str, str]:
 
     lines.append("🐱 **HackerNews**")
     lines.append("")
-    for idx, item in enumerate(query_source("hackernews", 8), 1):
-        add_hn_item(lines, item, idx, cache)
+    hn_items = query_source("hackernews", 8)
+    if hn_items:
+        for idx, item in enumerate(hn_items, 1):
+            add_hn_item(lines, item, idx, cache)
+    else:
+        lines.append("• [今日 HackerNews 暂无数据](链接未获取)")
+        lines.append("")
+        lines.append("> 📍 来源：排名未获取 · 热度未获取  ")
+        lines.append("> 📌 事件：当前采集窗口内 HN 数据未获取。  ")
+        lines.append("> 💡 解读：等待下一轮采集补齐。  ")
+        lines.append("> ✅ 可信度：数据缺口")
+        lines.append("")
 
     lines.append("📜 **论文·学术**")
     lines.append("")
-    for item in query_source("arxiv", 5):
-        add_paper_item(lines, item)
+    arxiv_items = query_source("arxiv", 5)
+    if arxiv_items:
+        for item in arxiv_items:
+            add_paper_item(lines, item)
+    else:
+        lines.append("• [今日 arXiv 暂无数据](链接未获取)")
+        lines.append("")
+        lines.append("> 📌 做什么：当前采集窗口内 arXiv 论文数据未获取。  ")
+        lines.append("")
+        lines.append("> 💡 价值：等待下一轮采集补齐。  ")
+        lines.append("")
+        lines.append("> 💡 工程价值：数据缺口  ")
+        lines.append("")
+        lines.append("> 代码：未获取")
+        lines.append("")
 
     lines.append("📊 **平台统计**")
     lines.append("")
@@ -829,6 +1100,14 @@ def main() -> int:
     print(f"已生成: {output_path}")
     print(f"行数: {content.count(chr(10)) + 1}")
     print(f"字符数: {len(content)}")
+    print()
+    # 运行质量检查
+    from check_briefing_quality import check_file, print_report
+    report = check_file(str(output_path))
+    print_report(report)
+    if report["quality_score"] < 50:
+        print("⚠️ 质量评分过低，建议检查数据库是否有足够描述数据。")
+        return 1
     return 0
 
 
