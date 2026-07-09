@@ -25,11 +25,21 @@ Compose 会把这些目录挂载到容器内，容器重建不会丢数据：
 docker compose build
 ```
 
+默认构建会使用较稳的 pip 镜像源和更长超时时间，避免 `pypi.org` 或
+`files.pythonhosted.org` 在本机网络下超时。需要切回官方源或使用其它源时，可以通过环境变量覆盖：
+
+```powershell
+$env:PIP_INDEX_URL = "https://pypi.org/simple"
+$env:PIP_DEFAULT_TIMEOUT = "180"
+$env:PIP_RETRIES = "10"
+docker compose build
+```
+
 如果构建失败，优先检查：
 
 - Docker Desktop 是否已启动。
 - 当前目录是否是项目根目录。
-- 网络是否能访问 Python 镜像和 pip 源。
+- 网络是否能访问 Python 镜像、Debian apt 源和 pip 源。
 
 ## 首次初始化
 
