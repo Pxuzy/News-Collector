@@ -12,17 +12,40 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 CST = timezone(timedelta(hours=8))
 DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "news.db")
-RETENTION_DAYS = 30  # 新闻保留天数
-MAX_ARTICLES = 500   # 最大正文数
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+RETENTION_DAYS = _env_int("RETENTION_DAYS", 30)  # 新闻保留天数
+MAX_ARTICLES = _env_int("MAX_ARTICLES", 500)     # 最大正文数
+SQLITE_TIMEOUT = _env_float("SQLITE_TIMEOUT", 30.0)
+SQLITE_BUSY_TIMEOUT_MS = _env_int("SQLITE_BUSY_TIMEOUT_MS", 30000)
 
 
 def _db():
     if DB != ':memory:':
         os.makedirs(os.path.dirname(DB), exist_ok=True)
-    c = sqlite3.connect(DB)
+    c = sqlite3.connect(DB, timeout=SQLITE_TIMEOUT)
     c.row_factory = sqlite3.Row
     if DB != ':memory:':
-        c.executescript("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON")
+        c.executescript(
+            "PRAGMA journal_mode=WAL; "
+            "PRAGMA synchronous=NORMAL; "
+            "PRAGMA foreign_keys=ON; "
+            f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}"
+        )
     return c
 
 
@@ -220,7 +243,8 @@ def upsert_news(items, source):
             iid, title, url = str(item.get('id','')), str(item.get('title','')), str(item.get('url','') or '')
             if not iid or not title:
                 iid = url or title
-                if not iid: continue
+                if not iid:
+                    continue
             raw_heat = str(item.get('heat') or item.get('extra',{}).get('info','') or '')
             heat = normalize_heat(raw_heat)
             heat_score = heat_to_score(raw_heat or heat)

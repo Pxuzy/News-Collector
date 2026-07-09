@@ -17,7 +17,10 @@ __pycache__/
 
 .ruff_cache/
 .codegraph/
+.codex/
+.agents/
 .ai/
+.tmp-docker-config/
 
 data/*.db
 data/*.db-*

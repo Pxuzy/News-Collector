@@ -6,9 +6,13 @@
 
 - `Dockerfile`：构建 Python 3.11 运行环境并安装 `requirements.txt`。
 - `.dockerignore`：排除本地数据库、输出、日志、缓存和私有环境文件，避免打进镜像。
-- `docker-compose.yml`：提供两个服务：
+- `docker-compose.yml`：提供这些服务：
   - `app`：一次性命令容器，用于初始化、采集、生成、校验。
   - `api`：FastAPI 查询服务，默认监听 `8899`。
+  - `manual-collect`：手动采集入口，默认强制刷新。
+  - `scheduler`：定时采集入口，默认尊重 `source_state.next_run_at`。
+  - `maintenance`：手动清理入口。
+  - `maintenance-scheduler`：定时清理入口。
 
 Compose 会把这些目录挂载到容器内，容器重建不会丢数据：
 
@@ -109,6 +113,18 @@ docker compose logs -f api
 ```powershell
 docker compose down
 ```
+
+## 手动采集和定时任务
+
+Docker 手动采集、定时采集和清理入口见 `docs/docker-scheduling.md`。常用命令：
+
+```powershell
+docker compose --profile manual run --rm manual-collect
+docker compose --profile schedule up -d api scheduler maintenance-scheduler
+docker compose --profile maintenance run --rm maintenance
+```
+
+这些入口默认读取 `.env` 或 `.env.example` 中列出的变量，例如 `COLLECT_SCHEDULE`、`COLLECT_SOURCE`、`COLLECT_CORE`、`COLLECT_FORCE`、`COLLECT_VACUUM`、`RETENTION_DAYS`、`MAX_ARTICLES` 和 SQLite 超时配置。
 
 ## 复制旧数据
 

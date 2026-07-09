@@ -9,25 +9,76 @@ x-news-collector-common: &news-collector-common
       PIP_RETRIES: ${PIP_RETRIES:-10}
   image: news-collector:latest
   working_dir: /app
-  environment:
-    PYTHONIOENCODING: utf-8
-    PYTHONUNBUFFERED: "1"
-    NEWS_COLLECTOR_ROOT: /app
-    PYTHONPATH: /app/scripts:/app
-    TZ: Asia/Shanghai
   volumes:
     - ./data:/app/data
     - ./output:/app/output
     - ./logs:/app/logs
     - ./cron/output:/app/cron/output
 
+x-news-collector-env: &news-collector-env
+  PYTHONIOENCODING: utf-8
+  PYTHONUNBUFFERED: "1"
+  NEWS_COLLECTOR_ROOT: /app
+  PYTHONPATH: /app/scripts:/app
+  TZ: ${TZ:-Asia/Shanghai}
+  COLLECT_PARALLEL: ${COLLECT_PARALLEL:-8}
+  COLLECT_SCHEDULE: ${COLLECT_SCHEDULE:-08:30,12:30,18:30,22:30}
+  COLLECT_VACUUM: ${COLLECT_VACUUM:-0}
+  RETENTION_DAYS: ${RETENTION_DAYS:-30}
+  MAX_ARTICLES: ${MAX_ARTICLES:-500}
+  MAINTENANCE_VACUUM: ${MAINTENANCE_VACUUM:-1}
+  MAINTENANCE_SCHEDULE: ${MAINTENANCE_SCHEDULE:-03:30}
+  SQLITE_TIMEOUT: ${SQLITE_TIMEOUT:-30}
+  SQLITE_BUSY_TIMEOUT_MS: ${SQLITE_BUSY_TIMEOUT_MS:-30000}
+
 services:
   app:
     <<: *news-collector-common
+    environment:
+      <<: *news-collector-env
     command: ["python", "-m", "compileall", "-q", "multi_source_news.py", "scripts", "sources"]
+
+  manual-collect:
+    <<: *news-collector-common
+    profiles: ["manual"]
+    environment:
+      <<: *news-collector-env
+      COLLECT_FORCE: ${COLLECT_FORCE:-1}
+      COLLECT_SOURCE: ${COLLECT_SOURCE:-}
+      COLLECT_CORE: ${COLLECT_CORE:-0}
+    command: ["python", "scripts/collect_once.py"]
+
+  scheduler:
+    <<: *news-collector-common
+    profiles: ["schedule"]
+    restart: unless-stopped
+    environment:
+      <<: *news-collector-env
+      COLLECT_FORCE: ${COLLECT_FORCE:-0}
+      COLLECT_SOURCE: ${COLLECT_SOURCE:-}
+      COLLECT_CORE: ${COLLECT_CORE:-0}
+    command: ["python", "scripts/scheduled_collector.py"]
+
+  maintenance:
+    <<: *news-collector-common
+    profiles: ["maintenance"]
+    environment:
+      <<: *news-collector-env
+    command: ["python", "scripts/maintenance.py"]
+
+  maintenance-scheduler:
+    <<: *news-collector-common
+    profiles: ["schedule"]
+    restart: unless-stopped
+    environment:
+      <<: *news-collector-env
+    command: ["python", "scripts/maintenance.py", "--loop"]
 
   api:
     <<: *news-collector-common
+    restart: unless-stopped
+    environment:
+      <<: *news-collector-env
     command:
       - sh
       - -c

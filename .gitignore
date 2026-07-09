@@ -28,6 +28,7 @@ cron/output/
 # One-off generated briefing scripts
 scripts/gen_briefing_v23.py
 scripts/gen_evening_recap.py
+scripts/generate_briefing_*.py
 scripts/gen_recap_*.py
 
 # Local tool state

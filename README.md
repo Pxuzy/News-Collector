@@ -22,6 +22,9 @@ News-Collector/
 │   ├── gen_today_v23_briefing.py v23 简报生成器
 │   ├── validate_briefing.py      简报格式校验
 │   ├── fix_data_gaps.py          HN/GitHub 数据补齐
+│   ├── collect_once.py           Docker 手动/定时采集包装
+│   ├── scheduled_collector.py    Docker 定时采集循环
+│   ├── maintenance.py            Docker 保留策略清理与 VACUUM
 │   ├── nb_query.py               Hermes/CLI 查询桥接
 │   ├── query.py                  人工查询 CLI
 │   ├── api.py                    FastAPI 查询接口
@@ -39,8 +42,10 @@ News-Collector/
 ├── docs/file-layout.md           文件架构与整理边界说明
 ├── docs/setup.md                 新环境安装、运行和排障说明
 ├── docs/docker.md                Docker 部署说明
+├── docs/docker-scheduling.md     Docker 定时采集与清理说明
 ├── Dockerfile                    容器镜像构建文件
 ├── docker-compose.yml            Docker Compose 服务定义
+├── .env.example                  Docker 环境变量样例
 ├── config/watch_keywords.json    监控关键词
 └── requirements.txt
 ```
@@ -66,7 +71,12 @@ docker compose build
 docker compose run --rm app python multi_source_news.py --source baidu,zhihu --force --parallel 2
 docker compose run --rm app python scripts/generate_briefing.py --skip-collect
 docker compose up -d api
+docker compose --profile schedule up -d api scheduler maintenance-scheduler
+docker compose --profile manual run --rm manual-collect
+docker compose --profile maintenance run --rm maintenance
 ```
+
+定时采集、手动采集和定时清理入口见 `docs/docker-scheduling.md`。定时服务默认不强制刷新，依赖 `source_state.next_run_at` 跳过未到期源，避免重复采集。
 
 ## 新文件归类规则
 
@@ -77,7 +87,7 @@ docker compose up -d api
 - 简报格式与内容生成只走 `scripts/gen_today_v23_briefing.py`。
 - 一键执行流程只放到 `scripts/generate_briefing.py`。
 - 给 Hermes/CLI/HTTP 调用的查询入口分别放到 `nb_query.py`、`query.py`、`api.py`、`briefing_api.py`。
-- cron 包装只保留 `run_collector_silent.py` 和 `run_collector_core.py`。
+- cron/no-agent 包装保留 `run_collector_silent.py` 和 `run_collector_core.py`；Docker 调度包装使用 `collect_once.py`、`scheduled_collector.py` 和 `maintenance.py`。
 - 生成物只进 `output/`，不要把生成物当源码维护。
 - 不再新增无引用模板；格式规则写到 `skill/references/`。
 
