@@ -114,7 +114,8 @@ def validate(text: str) -> list[str]:
         if "HN#" in first:
             if "Points" not in block and "points" not in block:
                 errors.append(f"第 {start + 1} 行：HN 条目缺少 Points 字段")
-            if "Comments" not in block and "comments" not in block:
+            # 支持英文 Comments / comments 和中文「💬 N 条评论」两种格式
+            if "Comments" not in block and "comments" not in block and "条评论" not in block:
                 errors.append(f"第 {start + 1} 行：HN 条目缺少 Comments 字段")
             if "💡 解读" not in block:
                 errors.append(f"第 {start + 1} 行：HN 条目缺少 💡 解读")
@@ -130,10 +131,12 @@ def validate(text: str) -> list[str]:
         is_github = "GitHub#" in first
         is_hn = "HN#" in first
         is_paper = "📜" in first
+        # 今日要点概览条目（🔴/🟡/🟢）只有标题+来源标签，无完整新闻块字段
+        is_overview = any(m in first for m in ("🔴", "🟡", "🟢"))
 
         # 检查国内热点条目是否有 💡 解读
         # 只检查明确属于国内热点子栏目的条目（含"国内"上下文标记），不检查国外栏目
-        if not is_github and not is_hn and not is_paper:
+        if not is_github and not is_hn and not is_paper and not is_overview:
             domestic_markers = ("🌞", "🔬", "🎬", "⚽", "🚗", "🏮", "时政", "外交", "社会", "民生", "科技", "数码", "娱乐", "综艺", "体育", "赛事", "汽车", "能源")
             skip_markers = ("🌏", "🌍", "国际", "国外")
             has_domestic = any(dmarker in block for dmarker in domestic_markers)
