@@ -1129,13 +1129,12 @@ def add_paper_item(lines: list[str], item: dict) -> None:
     cat_str = f" · 分类：{', '.join(categories)}" if categories else ""
     lines.append(f"📄 [{title}]({url})")
     lines.append("")
-    # 📌 做什么：中文解读为主 + 原文摘要辅
-    doing = profile['doing']
+    # 中文概括解读（不贴原文英文摘要）
     if summary:
-        lines.append(f"> 📌 做什么：{doing}  ")
-        lines.append(f"> 📄 原文：{summary}{cat_str}  ")
+        cn_doing = _paper_cn_reading(title, summary)
     else:
-        lines.append(f"> 📌 做什么：{doing} {profile['why']}{cat_str}  ")
+        cn_doing = f"{profile['doing']} {profile['why']}"
+    lines.append(f"> 📌 解读：{cn_doing}  ")
     lines.append("")
     lines.append(f"> 💡 价值：{profile['value']}  ")
     lines.append("")
@@ -1143,6 +1142,101 @@ def add_paper_item(lines: list[str], item: dict) -> None:
     lines.append("")
     lines.append("> 代码：未获取")
     lines.append("")
+
+
+def _paper_cn_reading(title: str, summary: str) -> str:
+    """根据标题和摘要生成中文概括解读"""
+    t = clean(title, 60)
+    s = words_for(summary)
+    blob = words_for(t, summary)
+
+    # 检测论文主题
+    topic = "该研究"
+    if contains_any(blob, ("language model", "llm", "transformer", "attention", "pretrain", "linearization")):
+        topic = "大语言模型"
+    elif contains_any(blob, ("agent", "agents", "reflection", "trajectory", "action")):
+        topic = "AI Agent"
+    elif contains_any(blob, ("structure-property", "materials", "chemistry", "biology", "molecule")):
+        topic = "科学 AI（材料/化学）"
+    elif contains_any(blob, ("database", "sql", "storage", "query", "driver", "jdbc", "odbc")):
+        topic = "数据库与存储"
+    elif contains_any(blob, ("federated", "privacy")):
+        topic = "联邦学习"
+    elif contains_any(blob, ("robot", "embodied", "vision", "multimodal", "omni")):
+        topic = "具身智能/多模态"
+    elif contains_any(blob, ("counterfactual", "explanation", "interpret", "explain")):
+        topic = "可解释 AI"
+    elif contains_any(blob, ("coding", "code", "program", "compile")):
+        topic = "代码智能"
+    elif contains_any(blob, ("retrieval", "rag", "knowledge")):
+        topic = "检索增强(RAG)"
+
+    # 从摘要中提取具体方法/对象的关键短语
+    specifics = ""
+    for phrase in [
+        r"([A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+)",  # 5个英文词
+        r"([A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+)",               # 4个英文词
+    ]:
+        import re as _re
+        m = _re.search(phrase, summary)
+        if m:
+            specifics = m.group(1)
+            break
+    if not specifics:
+        # 取第一个长句前60字符
+        sentences = summary.replace('\n', ' ').split('.')
+        for sent in sentences:
+            if len(sent.strip()) > 30:
+                specifics = sent.strip()[:80]
+                break
+
+    # 提炼核心方法
+    method = ""
+    if contains_any(s, ("propos", "introduc", "present", "develop", "novel")):
+        if contains_any(s, ("framework", "system", "architecture")):
+            method = "提出新框架/系统架构"
+        elif contains_any(s, ("method", "approach", "algorithm")):
+            method = "提出新方法/算法"
+        elif contains_any(s, ("model", "network", "architecture")):
+            method = "提出新模型架构"
+        else:
+            method = "提出新方案"
+    elif contains_any(s, ("analyze", "analysis", "study", "investigate", "understand")):
+        method = "分析研究"
+    elif contains_any(s, ("improve", "enhance", "optimize", "reduce", "accelerate")):
+        method = "优化改进"
+    elif contains_any(s, ("survey", "review", "overview", "taxonomy")):
+        method = "综述调研"
+    else:
+        # 更具体的fallback
+        if contains_any(s, ("efficient", "efficiency", "cost")):
+            method = "效率优化"
+        elif contains_any(s, ("scalab", "scale", "distribut")):
+            method = "可扩展方案"
+        elif contains_any(s, ("bottleneck", "limit", "challenge")):
+            method = "突破瓶颈"
+        else:
+            method = "技术研究"
+
+    # 提炼目标问题
+    goal = ""
+    if contains_any(s, ("bottleneck", "limitation", "challenge", "issue", "problem", "quadratic")):
+        goal = "解决现存瓶颈/挑战"
+    elif contains_any(s, ("efficient", "efficiency", "cost", "speed", "fast", "accelerat")):
+        goal = "提升效率/降低成本"
+    elif contains_any(s, ("understand", "explain", "interpret", "insight")):
+        goal = "加深理解/提供解释"
+    elif contains_any(s, ("scalab", "large-scale", "distribut")):
+        goal = "实现可扩展/大规模部署"
+    elif contains_any(s, ("reflect", "diagnos", "extract", "discover")):
+        goal = "增强诊断/提取能力"
+    else:
+        goal = "探索新方向"
+
+    # 组装输出
+    if specifics:
+        return f"{topic}领域，{method}以{goal}。核心思路：{specifics}……"
+    return f"{topic}领域，{method}以{goal}。标题「{t}」"
 
 
 def section_for_item(item: dict) -> str:
@@ -1183,7 +1277,24 @@ def social_news_insight(item: dict) -> str:
         return f"“{title}”说明台风路径或影响范围仍有变化，后续要看气象预报、停航停课和地方响应。"
     if contains_any(blob, ["暴雨", "强对流", "防汛", "避险", "预警", "天气", "紧急提示"]):
         return f"“{title}”是一条公共安全提醒，关键信息是风险区域、避险动作和出行限制。"
-    if contains_any(blob, ["男篮", "女篮", "足球", "世界杯", "c罗", "c 罗", "哈兰德", "比赛", "赛事", "夺冠", "判罚"]):
+    if contains_any(blob, ["火灾", "起火", "消防", "火势", "燃烧", "爆炸"]):
+        return f"“{title}”涉及火灾/爆炸安全事故，重点看伤亡人数、起火原因调查和应急响应进展。"
+    if contains_any(blob, ["蛇", "越狱", "动物", "养殖"]):
+        return f"“{title}”是一条社会民生新闻，核心看事件起因、处置进展和相关管理漏洞。"
+    if contains_any(blob, ["避暑", "旅游", "暑期", "出行", "放假"]):
+        return f"“{title}”是暑期出行/旅游相关话题，重点看目的地热度、安全提醒和客流管理。"
+    if contains_any(blob, ["医保", "基金", "追回", "骗保", "医疗"]):
+        return f"“{title}”涉及医保基金监管，重点看追回金额、查处案例和制度漏洞修补。"
+    if contains_any(blob, ["院士", "作息", "健康", "养生", "睡眠"]):
+        return f"“{title}”是健康科普类内容，核心看信息来源是否权威、建议是否可操作。"
+    if contains_any(blob, ["手机丢失", "卡内余额", "转空", "盗刷"]):
+        return f"“{title}”涉及个人财产安全，重点看事件经过、平台赔付机制和用户防范建议。"
+    if contains_any(blob, ["就业", "新增就业", "城镇", "岗位"]):
+        return f"“{title}”是就业/经济数据类新闻，重点看数据来源、统计口径和趋势变化。"
+    if contains_any(blob, ["纸币", "人民币", "汇率", "降息", "加息"]):
+        return f"“{title}”是金融/货币政策新闻，核心关注政策意图和市场预期变化。"
+    if contains_any(blob, ["男篮", "女篮", "足球", "世界杯", "c罗", "c 罗", "哈兰德",
+                            "比赛", "赛事", "夺冠", "判罚", "晋级", "决赛", "冠军"]):
         if contains_any(blob, ["禁赛", "规则", "国际足联", "电话交涉", "特朗普"]):
             return f"“{title}”涉及赛事规则和场外干预争议，关键看官方解释、球队表态和程序公平问题。"
         if contains_any(blob, ["姐姐", "同框", "家族", "像哈兰德"]):
@@ -1201,10 +1312,24 @@ def social_news_insight(item: dict) -> str:
         return f"“{title}”触及法律服务和程序权利，关键是区分个案经验、制度规则和可核实证据。"
     if contains_any(blob, ["版权", "文物"]):
         return f"“{title}”牵涉知识产权或公共文化资产，重点看判决依据、权属证明和行业示范效应。"
-    if contains_any(blob, ["明星", "综艺", "穿搭", "情侣", "演唱会", "电影", "电视剧", "恋情", "粉丝"]):
+    if contains_any(blob, ["明星", "综艺", "穿搭", "情侣", "演唱会", "电影", "电视剧", "恋情", "粉丝", "票房"]):
         if contains_any(blob, ["穿搭", "情侣"]):
             return f"“{title}”是一条生活方式内容，核心看点是季节搭配、使用场景和可参考程度。"
+        if contains_any(blob, ["预售", "票房", "破"]):
+            return f"“{title}”是影视/演出市场数据，重点看预售增速、口碑发酵和最终票房预期。"
         return f"“{title}”属于娱乐动态，重点看当事方回应、作品进展和商业合作是否受影响。"
+    if contains_any(blob, ["游戏", "手游", "端游", "steam", "ps5", "xbox", "switch", "电竞"]):
+        return f"“{title}”是游戏/电竞动态，重点看玩法创新、运营活动和赛事结果。"
+    if contains_any(blob, ["新车", "上市", "试驾", "比亚迪", "蔚来", "小鹏", "理想", "小米"]):
+        return f"“{title}”是新能源汽车动态，重点看售价、配置差异和交付节奏。"
+    if contains_any(blob, ["芯片", "半导体", "估值", "融资", "投资", "量产"]):
+        return f"“{title}”是科技产业新闻，重点看融资规模、技术路线和产能规划。"
+    if contains_any(blob, ["美股", "a股", "a 股", "股市", "大盘", "指数", "涨停", "跌停"]):
+        return f"“{title}”是股市/资本市场动态，重点看涨跌原因、资金流向和政策面变化。"
+    if contains_any(blob, ["碳达峰", "碳中和", "减排", "环保", "绿色"]):
+        return f"“{title}”是气候政策与绿色发展议题，重点看具体行业减排目标和实施路径。"
+    if contains_any(blob, ["物业", "业主", "欠缴", "物业费", "法院判"]):
+        return f"“{title}”是民生法律案例，重点看判决依据、典型意义和对普通业主的参考价值。"
     return f"“{title}”需要先核实事实来源，再看事件背景、影响对象和后续进展。"
 
 
@@ -1272,6 +1397,131 @@ def build_briefing() -> tuple[str, str]:
 
     # 全局已用 key 集合 — 防止同一条新闻出现在多个 section 中
     used_keys: set[str] = set()
+
+    # ─── 今日要点概览（今日热点 + 推荐 AI + 推荐 GitHub）───
+    lines.append("📌 **今日要点**")
+    lines.append("")
+    # 热点新闻
+    highlight_pool = list(main_items)
+    if len(highlight_pool) < 5:
+        extra_highlights = query_categories(["社会", "军事", "财经", "AI"], 15)
+        for it in extra_highlights:
+            if item_key(it) not in {item_key(h) for h in highlight_pool}:
+                highlight_pool.append(it)
+    highlight_pool = unique(highlight_pool, 6)
+    for idx, item in enumerate(highlight_pool):
+        used_keys.add(item_key(item))
+        section_name = section_for_item(item)
+        dot = ["🔴", "🔴", "🔴", "🟡", "🟡", "🟢"][idx] if idx < 6 else "🟡"
+        lines.append(f"• {dot} {md_link(item)}  ")
+        lines.append(f"> 📍 {SOURCE_CN.get(item.get('source',''), item.get('source',''))} · {section_name}  ")
+    lines.append("")
+
+    # 推荐 AI 动态
+    ai_recs_pool = []
+    for src in ("hackernews", "aihot", "huggingface"):
+        for it in query_source(src, 20):
+            title = words_for(it.get("title"))
+            if contains_any(title, ("gpt", "claude", "llm", "openai", "anthropic", "agent",
+                                     "deepseek", "gemini", "codex", "glm", "model", "ai ",
+                                     "copilot", "hugging face", "rag", "inference")):
+                if item_key(it) not in used_keys:
+                    ai_recs_pool.append(it)
+    for it in query_source("arxiv", 10):
+        if item_key(it) not in used_keys:
+            ai_recs_pool.append(it)
+    ai_recs = unique(ai_recs_pool, 3)
+    if ai_recs:
+        lines.append("⭐ **推荐 AI 动态**  ")
+        for item in ai_recs:
+            used_keys.add(item_key(item))
+            title = clean(item.get("title"), 60)
+            url = clean(item.get("url")) or "链接未获取"
+            blob = words_for(title)
+            if contains_any(blob, ("gpt", "claude", "openai", "anthropic", "llm", "model")):
+                tag = "模型动态"
+            elif contains_any(blob, ("agent", "coding", "codex")):
+                tag = "Agent工具"
+            elif item.get("source") == "arxiv":
+                tag = "前沿论文"
+            else:
+                tag = "AI热点"
+            lines.append(f"  • [{title}]({url}) — {tag}  ")
+        lines.append("")
+
+    # 推荐 GitHub 项目
+    gh_recs = []
+    seen_repos: set[str] = set()
+    # 从 trend cache 取
+    gh_weekly_raw = cache.get("github_weekly", [])
+    for item in gh_weekly_raw:
+        repo = item.get("repo", "") if isinstance(item, dict) else ""
+        if not repo or "/" not in repo:
+            continue
+        if repo in seen_repos or f"repo:{repo}" in used_keys:
+            continue
+        seen_repos.add(repo)
+        blob = words_for(repo)
+        if contains_any(blob, ["awesome", "resources", "docs", "design system"]):
+            continue
+        info = github_info(repo, cache)
+        desc = clean(info.get("description") or item.get("description", ""), 100)
+        stars = info.get("stars") or item.get("stars", 0)
+        gh_recs.append((repo, desc, stars, info))
+        if len(gh_recs) >= 3:
+            break
+    if len(gh_recs) < 2:
+        for item in query_source("github", 10):
+            repo = repo_name(item)
+            if repo in seen_repos or f"repo:{repo}" in used_keys:
+                continue
+            seen_repos.add(repo)
+            info = github_info(repo, cache)
+            desc = clean(info.get("description") or parse_extra(item).get("hover", ""), 100)
+            stars = info.get("stars") or clean(item.get("heat")).replace("⭐", "").replace(",", "")
+            gh_recs.append((repo, desc, stars, info))
+            if len(gh_recs) >= 3:
+                break
+    if gh_recs:
+        lines.append("🔧 **推荐 GitHub 项目**  ")
+        for repo, desc, stars, info in gh_recs:
+            used_keys.add(f"repo:{repo}")
+            url = f"https://github.com/{repo}"
+            blob = words_for(repo, desc)
+            if contains_any(blob, ["ai ", "agent", "agentic", "llm", "model"]):
+                tag = "AI/Agent"
+            elif contains_any(blob, ["security", "pentest", "vulnerab"]):
+                tag = "安全工具"
+            elif contains_any(blob, ["crawl", "scraper", "web data"]):
+                tag = "数据工具"
+            elif contains_any(blob, ["cli", "command", "orm", "database", "sql"]):
+                tag = "开发工具"
+            else:
+                tag = "趋势项目"
+            # 简短中文介绍（基于实际描述, 避免重复）
+            cn_intro = ""
+            d = words_for(desc)
+            if contains_any(d, ("design system", "design.md", "brand design")):
+                cn_intro = "知名品牌设计规范分析合集，AI 可参考生成匹配前端设计。"
+            elif contains_any(d, ("production-grade", "engineering skills", "coding agents")):
+                cn_intro = "生产级 AI 编码 Agent 技能库，含代码审查、调试、部署等工程模板。"
+            elif contains_any(d, ("llm friendly", "web crawler", "scraper")):
+                cn_intro = "开源 LLM 友好网页爬虫，为 RAG 和 AI 应用提供结构化数据。"
+            elif contains_any(d, ("linux server", "securing", "how-to guide")):
+                cn_intro = "Linux 服务器安全加固指南，覆盖防火墙、SSH、审计等最佳实践。"
+            elif contains_any(d, ("penetration testing", "pentest", "autonomous")):
+                cn_intro = "全自主 AI 渗透测试系统，自动发现和验证安全漏洞。"
+            elif contains_any(d, ("job application", "claude code", "hire")):
+                cn_intro = "基于 Claude Code 的 AI 求职助手，自动评估岗位、生成定制简历。"
+            elif contains_any(d, ("office", "document", "excel", "automate")):
+                cn_intro = "面向 AI Agent 的 Office 办公套件 CLI，支持文档读写编辑。"
+            elif contains_any(d, ("meeting", "transcription", "whisper", "speaker")):
+                cn_intro = "隐私优先的本地 AI 会议助理，支持实时转写和说话人分离。"
+            else:
+                cn_intro = f"{clean(desc, 80)}" if desc else "GitHub 趋势热门项目。"
+            lines.append(f"  • [{repo}]({url}) ⭐{stars} · {tag}  ")
+            lines.append(f"    {cn_intro}  ")
+        lines.append("")
 
     lines.append("🧭 **今日主线**")
     lines.append("")
@@ -1377,6 +1627,7 @@ def build_briefing() -> tuple[str, str]:
     hn_items = query_source("hackernews", 8)
     if hn_items:
         for idx, item in enumerate(hn_items, 1):
+            used_keys.add(item_key(item))
             add_hn_item(lines, item, idx, cache)
     else:
         lines.append("• [今日 HackerNews 暂无数据](链接未获取)")
@@ -1403,9 +1654,6 @@ def build_briefing() -> tuple[str, str]:
         lines.append("> 💡 工程价值：数据缺口  ")
         lines.append("")
         lines.append("> 代码：未获取")
-        lines.append("")
-
-    lines.append("📊 **平台统计**")
     lines.append("")
     for row in stats.get("by_source", [])[:16]:
         source = row["source"]

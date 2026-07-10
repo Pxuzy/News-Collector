@@ -215,12 +215,17 @@ def fetch_hn_comments_by_item(item_ids=None, limit=15):
     return results
 
 def fetch_github_repo_info(repo_name):
-    """从 GitHub API 获取单个仓库的语言、Stars、Topics"""
+    """从 GitHub API 获取单个仓库的语言、Stars、Topics（支持 Token 认证）"""
     if repo_name in GITHUB_API_CACHE:
         return GITHUB_API_CACHE[repo_name]
     try:
         url = f'https://api.github.com/repos/{repo_name}'
-        req = urllib.request.Request(url, headers={'User-Agent': 'Hermes/1.0'})
+        headers = {'User-Agent': 'Hermes/1.0'}
+        # 使用 token 提升 rate limit 到 5000/小时
+        gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
+        if gh_token:
+            headers["Authorization"] = f"Bearer {gh_token}"
+        req = urllib.request.Request(url, headers=headers)
         resp = urllib.request.urlopen(req, timeout=8)
         data = json.loads(resp.read())
         result = {
