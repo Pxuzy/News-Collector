@@ -9,12 +9,6 @@ feedparser>=6.0
 # 正文提取
 trafilatura>=1.6
 
-# 浏览器自动化 (评论采集等)
-playwright>=1.40
-
 # HTTP API
 fastapi>=0.100
 uvicorn>=0.20
-
-# 测试
-pytest>=8.0
