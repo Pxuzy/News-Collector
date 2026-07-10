@@ -28,7 +28,7 @@ def source_github() -> tuple[Optional[list[dict]], Optional[str]]:
                 items.append({"id": href.strip('/'), "title": title,
                               "url": f"https://github.com{href.strip()}",
                               "heat": f"⭐{stars}" if stars else '',
-                              "extra": {"source": "🐙GitHub", "hover": desc_t[:200]}})
+                              "extra": {"source": "🐙GitHub", "hover": desc_t[:200], "desc": desc_t[:200]}})
     else:
         import re
         for m in re.finditer(r'<article[^>]*>[\s\S]*?<h2[^>]*>[\s\S]*?<a\s+href="(/[^"]+)"[^>]*>([\s\S]*?)</a>', html):

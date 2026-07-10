@@ -147,7 +147,7 @@ def main():
     total_updated = sum(r.get('updated', 0) for r in results.values())
 
     # 跨源去重
-    deduped = cross_source_dedup(delay_minutes=10, threshold=0.45) if targets else 0
+    deduped = cross_source_dedup(delay_minutes=1440, threshold=0.45) if targets else 0
     if deduped > 0:
         log.info(f"🧹 跨源去重: 删除了 {deduped} 条重复")
 

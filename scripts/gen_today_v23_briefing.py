@@ -186,13 +186,80 @@ def search_titles(keywords: list[str], limit: int = 10) -> list[dict]:
     return query_sql(f"({clauses})", params, limit)
 
 
-def unique(items: list[dict], limit: int) -> list[dict]:
+def unique(items: list[dict], limit: int, cross_source: bool = True,
+           used_keys: set[str] | None = None, keyword_dedup: bool = True) -> list[dict]:
+    """去重: 先按 canonical_key/url 去重, 再按跨源标题 2-gram 相似度去重,
+    最后按关键词共现做事件级去重.
+
+    Args:
+        cross_source: 是否启用跨源标题相似度去重 (默认 True)
+        used_keys: 外部已占用的 key 集合, 避免与前一 section 重复
+        keyword_dedup: 是否启用关键词事件去重 (默认 True)
+    """
+    from dedup import _norm, _ng
+    import re as _re
+
+    # 事件关键词: 从标题中提取 2-3 字关键片段做跨源同事件检测
+    def _extract_keywords(title: str) -> set[str]:
+        n = _norm(title)
+        segs: set[str] = set()
+        # 用 2-gram 叠加作为关键词种子 (覆盖 "台风巴威" 这类多字实体)
+        for i in range(len(n) - 1):
+            pair = n[i:i+2]
+            if pair and not pair.isdigit():
+                segs.add(pair)
+        # 过滤掉过于普遍的词 (停用词)
+        stopwords = {'最新', '今日', '热搜', '热点', '事件', '进展', '成为', '当前', '已经', '可以', '关于', '对此'}
+        segs -= stopwords
+        # 英文 4+ 字单词
+        segs.update(w.lower() for w in _re.findall(r'[a-z]{4,}', n))
+        return segs
+
+    def _event_overlap(kw1: set, kw2: set) -> bool:
+        """两个关键词集合是否有显著重合 (>=3 个公共 2-gram 或 Jaccard>0.3)"""
+        if not kw1 or not kw2:
+            return False
+        common = kw1 & kw2
+        if len(common) >= 3:
+            return True
+        jac = len(common) / len(kw1 | kw2)
+        return jac > 0.3
+
     seen: set[str] = set()
-    out: list[dict] = []
+    seen_norms: list[set] = []
+    seen_keywords: list[set] = []
+    out = []
     for item in items:
         key = item_key(item)
         if not key or key in seen:
             continue
+        if used_keys and key in used_keys:
+            continue
+        title = item.get("title", "")
+        if cross_source:
+            n = _norm(title)
+            ng = _ng(n) if len(n) >= 4 else set()
+            is_dup = False
+            for prev_ng in seen_norms:
+                if ng and prev_ng and len(ng & prev_ng) / len(ng | prev_ng) > 0.45:
+                    is_dup = True
+                    break
+            if is_dup:
+                continue
+            if ng:
+                seen_norms.append(ng)
+        # 关键词事件去重: 同一事件不同角度的标题 (2-gram 不够, 关键词互补)
+        if keyword_dedup:
+            kw = _extract_keywords(title)
+            is_event_dup = False
+            for prev_kw in seen_keywords:
+                if _event_overlap(kw, prev_kw):
+                    is_event_dup = True
+                    break
+            if is_event_dup:
+                continue
+            if kw:
+                seen_keywords.append(kw)
         seen.add(key)
         out.append(item)
         if len(out) >= limit:
@@ -809,16 +876,21 @@ def add_paper_item(lines: list[str], item: dict) -> None:
     title = clean(item.get("title"), 100)
     extra = parse_extra(item)
     summary = clean(item.get("summary") or extra.get("summary") or extra.get("desc"), 240)
+    categories = extra.get("categories", [])
     profile = paper_profile(title, summary)
     lines.append(f"📄 {md_link(item)}")
     lines.append("")
-    lines.append(f"> 📌 做什么：{profile['doing']} {profile['why']}")
+    cat_str = f" · 分类：{', '.join(categories)}" if categories else ""
+    if summary:
+        lines.append(f"> 📌 摘要：{summary}{cat_str}  ")
+    else:
+        lines.append(f"> 📌 摘要：未获取{cat_str}  ")
     lines.append("")
-    lines.append(f"> 💡 价值：{profile['value']}")
+    lines.append(f"> 💡 解读：{profile['doing']}  ")
     lines.append("")
-    lines.append(f"> 💡 工程价值：{profile['engineering']}")
+    lines.append(f"> 🔬 价值：{profile['value']}  ")
     lines.append("")
-    lines.append("> 代码：未获取")
+    lines.append(f"> 🛠️ 工程价值：{profile['engineering']}  ")
     lines.append("")
 
 
@@ -889,12 +961,23 @@ def social_insight(source: str, item: dict, idx: int) -> str:
     return social_news_insight(item)
 
 
-def add_social(lines: list[str], source: str, label: str, count: int) -> None:
+def add_social(lines: list[str], source: str, label: str, count: int,
+               used_keys: set[str] | None = None) -> None:
     lines.append(f"{label}")
     lines.append("")
-    for idx, item in enumerate(query_source(source, count), 1):
+    shown = 0
+    for idx, item in enumerate(query_source(source, count * 3), 1):  # 多查一些用于跳过已用
+        if used_keys and item_key(item) in used_keys:
+            continue
         lines.append(f"• {SOURCE_CN.get(source, source)}#{idx} {md_link(item)} · 热度{heat_display(item)}")
         lines.append(f"> 💡 解读：{social_insight(source, item, idx)}")
+        shown += 1
+        if used_keys:
+            used_keys.add(item_key(item))
+        if shown >= count:
+            break
+    if shown == 0:
+        lines.append("• [今日暂无相关热点](链接未获取)")
     lines.append("")
 
 
@@ -930,9 +1013,13 @@ def build_briefing() -> tuple[str, str]:
         main_items.extend(query_categories(["社会", "军事", "财经", "AI", "体育"], 10))
         main_items = unique(main_items, 5)
 
+    # 全局已用 key 集合 — 防止同一条新闻出现在多个 section 中
+    used_keys: set[str] = set()
+
     lines.append("🧭 **今日主线**")
     lines.append("")
     for idx, item in enumerate(main_items, 1):
+        used_keys.add(item_key(item))
         add_news_block(lines, item, section_for_item(item), ranks, "🔴" if idx <= 3 else "🟠")
 
     sections = [
@@ -949,7 +1036,8 @@ def build_briefing() -> tuple[str, str]:
     for title, section_key, items in sections:
         lines.append(title)
         lines.append("")
-        selected = unique(items, 3 if section_key in ("汽车·能源", "娱乐·综艺") else 4)
+        limit = 3 if section_key in ("汽车·能源", "娱乐·综艺") else 4
+        selected = unique(items, limit, used_keys=used_keys)
         if not selected:
             lines.append("🟠 [今日暂无相关热点](链接未获取)")
             lines.append("")
@@ -960,19 +1048,21 @@ def build_briefing() -> tuple[str, str]:
             lines.append("")
             continue
         for item in selected:
+            used_keys.add(item_key(item))
             add_news_block(lines, item, section_key, ranks)
 
     lines.append("🔥 **各媒体平台热榜汇总**")
     lines.append("")
-    add_social(lines, "douyin", "🎵 **抖音 TOP热点**", 5)
-    add_social(lines, "weibo", "💬 **微博热搜**", 5)
-    add_social(lines, "zhihu", "💬 **知乎热榜**", 5)
-    add_social(lines, "baidu", "🔍 **百度热搜**", 5)
+    add_social(lines, "douyin", "🎵 **抖音 TOP热点**", 5, used_keys)
+    add_social(lines, "weibo", "💬 **微博热搜**", 5, used_keys)
+    add_social(lines, "zhihu", "💬 **知乎热榜**", 5, used_keys)
+    add_social(lines, "baidu", "🔍 **百度热搜**", 5, used_keys)
 
     lines.append("🌏 **国外热点**")
     lines.append("")
-    intl_items = unique(query_source("reuters", 4) + query_source("bbc_world", 4) + query_source("techcrunch", 3) + query_source("googlenews", 3), 6)
+    intl_items = unique(query_source("reuters", 4) + query_source("bbc_world", 4) + query_source("techcrunch", 3) + query_source("googlenews", 3), 6, used_keys=used_keys)
     for item in intl_items:
+        used_keys.add(item_key(item))
         source = item.get("source")
         section = "科技·数码" if source == "techcrunch" else "时政·外交"
         add_news_block(lines, item, section, ranks)
@@ -994,22 +1084,36 @@ def build_briefing() -> tuple[str, str]:
         + [item for item in query_source("aihot", 5) if is_valid_ai(item)]
         + [item for item in query_source("hackernews", 10) if is_valid_ai(item)]
     )
-    ai_items = unique(ai_pool, 6)
+    ai_items = unique(ai_pool, 6, used_keys=used_keys)
     for item in ai_items:
+        used_keys.add(item_key(item))
         add_news_block(lines, item, "AI·前沿", ranks, "🟣")
 
     lines.append("🐙 **GitHub 趋势**")
     lines.append("")
-    for idx, item in enumerate(query_source("github", 6), 1):
+    gh_daily = query_source("github", 6)
+    for idx, item in enumerate(gh_daily, 1):
         repo = repo_name(item)
+        used_keys.add(item_key(item))
+        used_keys.add(f"repo:{repo}")  # 记录仓库名便于周榜/机会去重
         add_github_item(lines, repo, clean(item.get("url")) or f"https://github.com/{repo}", idx, github_info(repo, cache), True, item)
     weekly = cache.get("github_weekly", [])[:6]
-    for idx, item in enumerate(weekly, 1):
+    weekly_repos_seen: set[str] = set()
+    weekly_shown = 0
+    for item in weekly:
         repo = clean(item.get("repo"))
+        # 跳过日榜已展示的 repo
+        if repo in weekly_repos_seen or f"repo:{repo}" in used_keys:
+            continue
+        weekly_repos_seen.add(repo)
+        used_keys.add(f"repo:{repo}")
+        weekly_shown += 1
         info = dict(github_info(repo, cache))
         info.setdefault("stars", item.get("stars"))
         info.setdefault("description", item.get("description"))
-        add_github_item(lines, repo, f"https://github.com/{repo}", idx, info, False)
+        add_github_item(lines, repo, f"https://github.com/{repo}", weekly_shown, info, False)
+        if weekly_shown >= 6:
+            break
 
     lines.append("🐱 **HackerNews**")
     lines.append("")
@@ -1061,7 +1165,10 @@ def build_briefing() -> tuple[str, str]:
 
     lines.append("👀 **继续跟踪**")
     lines.append("")
-    for dot, item in zip(["🔴", "🔴", "🟡", "🟡", "🟢"], main_items[:5]):
+    # 只保留未被前面 section 用掉的 main_items, 最多取 5 条
+    followup_items = [it for it in main_items if item_key(it) not in used_keys][:5]
+    for dot, item in zip(["🔴", "🔴", "🟡", "🟡", "🟢"], followup_items):
+        used_keys.add(item_key(item))
         lines.append(f"• {dot} {md_link(item)} — {SOURCE_CN.get(item.get('source',''), item.get('source',''))}热榜 | 看后续")
         lines.append("> 💡 跟踪：关注原始来源更新、官方回应、跨平台热度是否延续。  ")
         lines.append(f"> 💡 解读：{clean(item.get('title'), 60)}已经进入主线候选，下一步看事实是否被更多权威源确认。")
@@ -1069,12 +1176,32 @@ def build_briefing() -> tuple[str, str]:
 
     lines.append("⚠️ **风险与机会**")
     lines.append("")
-    lines.append(f"• 🔴 风险：{md_link(main_items[0]) if main_items else '[数据不足](链接未获取)'}")
+    # 找一个未使用的 main_item 做风险条目
+    risk_item = next((it for it in main_items if item_key(it) not in used_keys), None)
+    # 如果全部已用, 退而求其次取未标记的最新热点
+    if risk_item is None:
+        risk_candidates = query_categories(["社会", "军事", "财经", "AI", "体育"], 10)
+        risk_item = next((it for it in risk_candidates if item_key(it) not in used_keys), None)
+    risk_link = md_link(risk_item) if risk_item else "[数据不足](链接未获取)"
+    if risk_item:
+        used_keys.add(item_key(risk_item))
+    lines.append(f"• 🔴 风险：{risk_link}")
     lines.append("> 影响：如果后续信息升级，可能影响公共安全、政策沟通或市场预期。  ")
     lines.append("> 关注：官方通报、权威媒体复核和相关行业响应。")
     lines.append("")
-    lines.append("• 🟢 机会：[usestrix/strix](https://github.com/usestrix/strix)")
-    lines.append("> 影响：AI 安全测试工具继续升温，说明企业级 AI 应用的安全需求在变强。  ")
+    # 机会条目：从 GitHub 日榜中取一个有描述的，跳过已展示的
+    gh_items = query_source("github", 10)
+    opp_item = next((it for it in gh_items if item_key(it) not in used_keys and f"repo:{repo_name(it)}" not in used_keys), None)
+    if opp_item:
+        opp_repo = repo_name(opp_item)
+        opp_url = clean(opp_item.get("url")) or f"https://github.com/{opp_repo}"
+        opp_desc = clean(parse_extra(opp_item).get("hover") or parse_extra(opp_item).get("desc"), 60)
+        used_keys.add(item_key(opp_item))
+        lines.append(f"• 🟢 机会：[{opp_repo}]({opp_url})")
+        lines.append(f"> 影响：{opp_desc or '该项目进入 GitHub 趋势榜，开发者在快速验证相关方向。'}  ")
+    else:
+        lines.append("• 🟢 机会：[usestrix/strix](https://github.com/usestrix/strix)")
+        lines.append("> 影响：AI 安全测试工具继续升温，说明企业级 AI 应用的安全需求在变强。  ")
     lines.append("> 关注：开源项目成熟度、企业版计划、真实漏洞覆盖范围和审计报告。")
     lines.append("")
 

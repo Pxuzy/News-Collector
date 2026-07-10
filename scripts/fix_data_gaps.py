@@ -183,6 +183,8 @@ def get_trending_repos_from_db(limit=10):
                 repos.append(title)
             elif 'github.com' in url:
                 parts = url.replace('https://github.com/', '').split('/')
+                # 去掉 stargazers/forks 等后缀路径
+                parts = [p for p in parts if p not in ('stargazers', 'forks', 'issues', 'pulls', 'watchers', 'network', 'actions')]
                 if len(parts) >= 2:
                     repos.append(f"{parts[0]}/{parts[1]}")
         conn.close()
