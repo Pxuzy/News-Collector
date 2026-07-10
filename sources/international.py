@@ -18,12 +18,28 @@ def source_hackernews() -> tuple[Optional[list[dict]], Optional[str]]:
             a = row.select_one('.titleline a')
             title = a.text.strip() if a else ''
             iid = row.get('id', '')
-            se = soup.select_one(f'#score_{iid}')
+            # Score — 在 .athing 的下一个兄弟 .subtext 里
+            subtext = row.find_next_sibling('tr')
+            if subtext:
+                subtext = subtext.select_one('td.subtext')
+            se = subtext.select_one('.score') if subtext else None
             score = se.text.strip() if se else ''
+            # Comments — 从 subtext 里最后一个 <a>（href 含 item?id=）提取
+            comments = ''
+            if subtext:
+                all_links = subtext.select('a[href*="item?id="]')
+                if all_links:
+                    last_link = all_links[-1]
+                    comments_text = last_link.text.strip()
+                    # "123 comments" → "123"
+                    import re
+                    cm = re.search(r'(\d[\d,]*)\s*comment', comments_text)
+                    if cm:
+                        comments = cm.group(1)
             if title and iid:
                 items.append({"id": iid, "title": title,
                               "url": f"https://news.ycombinator.com/item?id={iid}",
-                              "heat": score, "extra": {"source": "🐱HN"}})
+                              "heat": score, "extra": {"source": "🐱HN", "comments": comments}})
     return items[:20], None if items else "HN无数据"
 
 

@@ -782,6 +782,230 @@ def hn_topic(title: str) -> tuple[str, str, str]:
     return ("工程", "重点看它解决的具体工程问题、是否能复现、以及是否比现有方案更简单。", "评论区通常会补充边界条件、替代方案和真实使用经验。")
 
 
+def hn_chinese_profile(title: str, points: str = "", comments: str = "") -> dict[str, str]:
+    """HN 条目的中文翻译、事件说明和解读"""
+    blob = words_for(title)
+    t = clean(title, 90)
+
+    # ========== Show HN ==========
+    if contains_any(blob, ["show hn", "show hn:"]):
+        project = clean(title.replace('Show HN:', '').replace('Show HN ', '').strip(), 50)
+        return {
+            "cn_title": f"展示项目：{project}",
+            "event": f"HN 用户自荐项目「{project}」，开发者向社区展示了自己的作品，HN 用户正在试用和讨论。",
+            "impact": "Show HN 是社区发现新工具、新产品的重要窗口，高赞说明它解决了真实问题或展示了有趣创意。",
+            "insight": "重点看项目是否开源、是否可立即试用，以及评论区给出的改进建议和同类产品对比。",
+        }
+
+    # ========== Launch HN / YC ==========
+    if contains_any(blob, ["launch hn", "launch hn:", "yc "]):
+        project = clean(title.replace('Launch HN:', '').replace('Launch HN ', '').strip(), 50)
+        return {
+            "cn_title": f"创业发布：{project}",
+            "event": f"YC 孵化的创业项目「{project}」正式在 HN 发布，创始团队介绍了产品功能和目标用户，社区正在反馈。",
+            "impact": "YC 孵化产品通常有明确的用户痛点和商业模式，HN 讨论可以快速验证市场对其方向的认可度。",
+            "insight": "关注产品的真实差异化、定价策略、技术壁垒和评论区中潜在用户的使用反馈。",
+        }
+
+    # ========== AI/LLM 发布 ==========
+    if contains_any(blob, ["gpt", "claude", "gemini", "deepseek", "qwen", "glm", "llama", "mistral", "codestral",
+                           "openai", "anthropic", "ai model", "language model"]):
+        model = clean(title, 40)
+        if contains_any(blob, ["release", "launch", "announce", "new "]):
+            return {
+                "cn_title": f"{model} 发布",
+                "event": f"{model} 正式发布/更新。技术社区正在分析其能力提升、架构变化和与竞品的对比。",
+                "impact": "新模型发布直接影响下游应用的性能天花板、API 定价和开发者工具链选择。",
+                "insight": "关注独立第三方评测结果、定价变化、开放权重/API 情况和评论区中一线工程师的真实使用体验。",
+            }
+        return {
+            "cn_title": f"{model}",
+            "event": f"关于 {model} 的讨论在 HN 上成为热点，技术社区正在分析其能力、成本和应用场景。",
+            "impact": "AI 模型的进展直接影响开发者的工具选型、应用性能和商业模式判断。",
+            "insight": "区分官方发布、社区评测和纯讨论，关注可复现的基准测试和评论区中的一线使用报告。",
+        }
+
+    # ========== 隐私/监控 (含 Chat Control) ==========
+    if contains_any(blob, ["chat control"]):
+        return {
+            "cn_title": "欧盟通过 Chat Control 监控法案",
+            "event": "欧洲议会通过了 Chat Control 1.0 法案，要求通讯平台扫描用户消息以检测儿童性虐待内容，引发大规模隐私争议。",
+            "impact": "该法案将强制端到端加密平台扫描用户内容，直接影响隐私保护、加密技术的可行性和言论自由。",
+            "insight": "关注法案覆盖范围（是否包括加密消息）、技术实现方式（客户端扫描 vs 服务器端）和生效时间线。",
+        }
+    if contains_any(blob, ["surveillance", "mass surveillance", "privacy", "tracking",
+                           "tracker", "gdpr", "digital rights"]):
+        return {
+            "cn_title": f"隐私与监控：{t}",
+            "event": f"涉及数字隐私和监控政策的新闻：{t}。隐私维权组织、立法机构和科技公司之间的博弈是核心主线。",
+            "impact": "监控类立法直接影响用户隐私保护水平、企业的合规成本和跨境数据流动规则。",
+            "insight": "区分法案草案、表决结果和正式实施三个阶段，关注例外条款和执行机制是否留有规避空间。",
+        }
+
+    # ========== 安全漏洞 ==========
+    if contains_any(blob, ["vulnerab", "exploit", "breach", "0-day", "zero-day", "cve",
+                           "ransomware", "backdoor", "malware", "supply chain attack"]):
+        vuln = clean(title, 60)
+        return {
+            "cn_title": f"安全漏洞：{vuln}",
+            "event": f"安全研究人员披露了 {vuln}，涉及具体漏洞细节、影响范围和修复方案。",
+            "impact": "安全漏洞直接影响用户数据安全、企业合规成本和平台信任度，补丁时间线是关注核心。",
+            "insight": "区分概念验证(PoC)和已在野利用，关注受影响版本范围、临时缓解措施和官方补丁发布状态。",
+        }
+
+    # ========== 政策/法律/诉讼 ==========
+    if contains_any(blob, ["ftc", "regulation", "regulatory", "compliance", "law ", "lawsuit", "legal",
+                           "court", "right to repair", "antitrust", "monopoly", "fcc",
+                           "european union", "eu ", "parliament", "congress"]):
+        policy = clean(title, 60)
+        # 具体政策事件
+        if contains_any(blob, ["right to repair", "right-to-repair"]):
+            company = "设备制造商"
+            for c in ["john deere", "apple", "microsoft", "samsung", "tesla"]:
+                if c in blob:
+                    company = {"john deere": "约翰迪尔", "apple": "苹果", "microsoft": "微软",
+                               "samsung": "三星", "tesla": "特斯拉"}.get(c, c)
+                    break
+            return {
+                "cn_title": f"维修权：{company} 达成和解",
+                "event": f"{company} 与美国监管机构就维修权问题达成和解，用户和第三方维修店将获得更自由的维修权限。",
+                "impact": "维修权运动直接影响消费品寿命、电子垃圾减量和消费者权益，也将推动设备可维修设计的标准化。",
+                "insight": "关注和解协议的具体条款：是否开放了诊断工具、是否影响保修、是否允许第三方配件。",
+            }
+        if contains_any(blob, ["chat control"]):
+            return {
+                "cn_title": "欧盟通过 Chat Control 监控法案",
+                "event": "欧洲议会通过了 Chat Control 1.0 法案，要求通讯平台扫描用户消息以检测儿童性虐待内容，引发大规模隐私争议。",
+                "impact": "该法案将强制端到端加密平台扫描用户内容，直接影响隐私保护、加密技术的可行性和言论自由。",
+                "insight": "关注法案覆盖范围（是否包括加密消息）、技术实现方式（客户端扫描 vs 服务器端）和生效时间线。",
+            }
+        return {
+            "cn_title": f"政策动态：{policy}",
+            "event": f"科技监管政策动态：{policy}。监管机构正在调整对科技行业的规则，可能影响商业模式和竞争格局。",
+            "impact": "科技监管政策直接影响企业的合规成本、商业模式和市场竞争格局，具有长期结构性影响。",
+            "insight": "关注法案的实际执行方式、豁免条款和行业应对预案，区分草案、表决通过和正式生效各阶段。",
+        }
+
+    # ========== 数据库/基础设施 ==========
+    if contains_any(blob, ["postgres", "postgresql", "mysql", "sqlite", "redis", "mongodb",
+                           "database", "sql ", "nosql", "orm"]):
+        db = clean(title, 60)
+        if contains_any(blob, ["rewritten", "rewrite", "rewriting"]):
+            lang = "Rust" if "rust" in blob else "新语言"
+            return {
+                "cn_title": f"数据库：{db}（用 {lang} 重写）",
+                "event": f"开发者用 {lang} 重写了 {db} 的关键组件或完整实现，目标是获得更好的性能和内存安全性。",
+                "impact": "基础设施项目重写影响技术社区的技术选型讨论，特别是对 Rust 等系统级语言在基础设施场景的可行性验证。",
+                "insight": "关注重写后的性能对比基准、API 兼容性和迁移成本，不要被「重写」的标题效应过度吸引。",
+            }
+        return {
+            "cn_title": f"数据库/基础设施：{db}",
+            "event": f"{db} 在 HN 上引发广泛讨论，社区正在分析其技术架构、性能特性或最新更新。",
+            "impact": "基础设施层的技术决策影响深远，涉及性能、运维成本和生态兼容性。",
+            "insight": "关注实际性能数据、与竞品的优劣势比较、迁移路径和社区生态成熟度。",
+        }
+
+    # ========== 编程语言/编译器 ==========
+    if contains_any(blob, ["rust ", "python ", "javascript", "typescript", "go ", "zig ",
+                           "compiler", "runtime", "vm ", "kernel"]):
+        lang = clean(title, 60)
+        return {
+            "cn_title": f"编程语言/工具：{lang}",
+            "event": f"关于 {lang} 的技术讨论在 HN 上成为热点，涉及语言特性、工具链或生态系统变化。",
+            "impact": "编程语言和工具链的讨论反映开发者社区的技术风向，影响团队技术选型和个体学习路径。",
+            "insight": "区分语言本身的改进、工具链更新和社区最佳实践的演进，不要因为单篇讨论热度而判断技术趋势已定。",
+        }
+
+    # ========== 开源 ==========
+    if contains_any(blob, ["open source", "foss", "license", "mit ", "apache ", "gpl"]):
+        oss = clean(title, 60)
+        return {
+            "cn_title": f"开源动态：{oss}",
+            "event": f"开源社区动态：{oss}，涉及许可证变更、项目治理或社区生态变化。",
+            "impact": "开源项目的许可证和治理模式变化直接影响使用方（企业）的合规风险和商业策略。",
+            "insight": "关注许可证变更的实际限制、社区分叉的健康度和维护者商业化的透明度。",
+        }
+
+    # ========== 商业/创业 ==========
+    if contains_any(blob, ["startup", "funding", "valuation", "acquisition", "revenue",
+                           "layoff", "hiring", "ceo", "ipo", "saas", "subscription",
+                           "pricing", "monetize", "profit"]):
+        biz = clean(title, 60)
+        if contains_any(blob, ["layoff", "layoffs", "firing", "fired"]):
+            return {
+                "cn_title": f"裁员：{biz}",
+                "event": f"科技公司裁员消息：{biz}。社区在讨论裁员规模、赔偿方案和行业影响。",
+                "impact": "科技行业裁员反映宏观经济和行业周期，影响从业者信心、招聘市场和创业活跃度。",
+                "insight": "关注裁员补偿方案、受影响团队的业务线分布和公司财务状况，避免仅凭单一事件判断行业趋势。",
+            }
+        return {
+            "cn_title": f"商业动态：{biz}",
+            "event": f"科技商业动态：{biz}，涉及创业公司的融资、收购或商业模式变化。",
+            "impact": "科技行业的投融资和商业变化反映行业趋势和资本流向，对从业者和创业者有参考意义。",
+            "insight": "区分 PR 宣传和实际数据，关注单位经济模型、市场竞争格局和可持续性。",
+        }
+
+    # ========== 科学/研究 ==========
+    if contains_any(blob, ["research", "paper ", "study ", "scientists", "science",
+                           "physics", "biology", "chemistry", "space", "nasa", "medicine", "dna"]):
+        sci = clean(title, 60)
+        return {
+            "cn_title": f"科学研究：{sci}",
+            "event": f"科研进展分享：{sci}，来自 HN 社区的讨论，可能涉及最新研究论文或科学发现。",
+            "impact": "科研分享可以快速了解某一领域的前沿动态，HN 社区常有领域内专家的补充和质疑。",
+            "insight": "先区分是科普文章、预印本还是正式发表的论文，评论区往往能补充论文局限性和可复现性评估。",
+        }
+
+    # ========== 游戏 ==========
+    if contains_any(blob, ["game", "gaming", "xbox", "steam", "playstation", "nintendo",
+                           "retro", "emulator", "3d", "rendering", "gpu"]):
+        game = clean(title, 60)
+        return {
+            "cn_title": f"游戏/图形：{game}",
+            "event": f"游戏或图形技术动态：{game}。社区在讨论相关技术和行业发展。",
+            "impact": "游戏和图形技术分享对游戏开发者、图形工程师和技术爱好者有参考价值。",
+            "insight": "区分玩家视角和技术工程视角，关注底层技术实现细节和平台政策变化。",
+        }
+
+    # ========== 自传/历史/文化 ==========
+    if contains_any(blob, ["story of", "history of", "my story", "interview with",
+                           "how to", "guide ", "tutorial"]):
+        story = clean(title, 60)
+        return {
+            "cn_title": f"分享：{story}",
+            "event": f"HN 上分享了一篇文章/访谈/教程：{story}，社区正在讨论其内容和价值。",
+            "impact": "高质量的分享文章是 HN 社区的精华内容，往往包含一线经验和深度思考。",
+            "insight": "先读原文再参考评论区——HN 评论区通常会补充案例、指出疏漏或提供替代方案。",
+        }
+
+    # ========== 硬件 ==========
+    if contains_any(blob, ["hardware", "cpu", "arm", "x86", "risc-v", "chip", "processor",
+                           "server", "ram", "memory", "storage", "ssd", "nvidia", "amd", "intel"]):
+        hw = clean(title, 60)
+        return {
+            "cn_title": f"硬件：{hw}",
+            "event": f"硬件技术动态：{hw}。涉及芯片、服务器或存储技术的最新进展。",
+            "impact": "硬件更新直接影响云计算成本、设备性能和开发者可用的算力资源。",
+            "insight": "关注实际性能提升幅度、功耗变化和供应链可用性，不要被纸面参数过度吸引。",
+        }
+
+    # ========== 默认 ==========
+    return {
+        "cn_title": t,
+        "event": f"技术社区讨论热点：{t}。HN 社区的活跃讨论正在围绕这一话题展开。",
+        "impact": "HN 热榜上的高投票数反映开发者社区对某个方向的集体关注，值得深入阅读原帖了解全貌。",
+        "insight": "先点开原文确认事实，再结合评论区判断讨论质量——高赞评论和深入讨论的价值远高于投票数。",
+    }
+
+
+def _hn_cn_title(title: str) -> str:
+    """将英文 HN 标题浓缩为中文字段（保留核心信息, 最长 60 字）"""
+    t = clean(title, 60)
+    if not t:
+        return "标题未获取"
+    return t
+
+
 def discussion_signal(points: object, comments: object) -> str:
     try:
         p = int(str(points).replace(",", "").strip())
@@ -802,14 +1026,37 @@ def discussion_signal(points: object, comments: object) -> str:
 
 def add_hn_item(lines: list[str], item: dict, rank: int, cache: dict) -> None:
     hn_cache = cache.get("hn_comments", {})
-    cached = hn_cache.get(item.get("title", ""), {}) if isinstance(hn_cache, dict) else {}
-    points = cached.get("points") or clean(item.get("heat")).replace(" points", "") or "未获取"
-    comments = cached.get("comments") or "未获取"
+    extra = parse_extra(item)
+    # 优先用 item id 匹配 cache, 其次用 title 匹配（兼容旧 cache 格式）
+    item_id = item.get("id", "")
+    cached = {}
+    if isinstance(hn_cache, dict):
+        cached = hn_cache.get(item_id, {})
+        if not cached:
+            cached = hn_cache.get(item.get("title", ""), {})  # fallback: 旧格式
+    # Points: 优先取 item.heat（采集器已有）, 次取 cache
+    raw_heat = clean(item.get("heat")).replace(" points", "").replace(",", "").replace("⭐", "")
+    points = cached.get("points") or raw_heat or "未获取"
+    # Comments: cache → extra.comments（采集器解析）→ "未获取"
+    raw_comments = extra.get("comments", "")
+    comments = cached.get("comments") or raw_comments or "未获取"
     url = cached.get("hn_url") or clean(item.get("url")) or "链接未获取"
-    topic_type, focus, discussion_focus = hn_topic(clean(item.get("title")))
-    lines.append(f"• HN#{rank} [{clean(item.get('title'), 90)}]({url}) Points：{points} · Comments：{comments} · 类型：{topic_type}")
+    title = clean(item.get("title"), 90)
+    profile = hn_chinese_profile(title, points, comments)
+    cn_title = profile.get("cn_title", title)
+    event = profile.get("event", "")
+    impact = profile.get("impact", "")
+    insight = profile.get("insight", "")
+    signal = discussion_signal(points, comments)
+
+    lines.append(f"• HN#{rank} [{title}]({url})")
     lines.append("")
-    lines.append(f"> 💡 解读：这是 {topic_type} 话题，{focus} {discussion_signal(points, comments)} {discussion_focus}")
+    lines.append(f"> 🀄 中文：{cn_title}  ")
+    lines.append(f"> 📌 事件：{event}  ")
+    if points:
+        lines.append(f"> 🔥 热度：{points} points · 💬 {comments} 条评论  ")
+    lines.append(f"> 🌊 影响：{impact}  ")
+    lines.append(f"> 💡 解读：{insight} {signal}  ")
     lines.append("")
 
 
@@ -874,23 +1121,27 @@ def paper_profile(title: str, summary: str = "") -> dict[str, str]:
 
 def add_paper_item(lines: list[str], item: dict) -> None:
     title = clean(item.get("title"), 100)
+    url = clean(item.get("url")) or "链接未获取"
     extra = parse_extra(item)
     summary = clean(item.get("summary") or extra.get("summary") or extra.get("desc"), 240)
     categories = extra.get("categories", [])
     profile = paper_profile(title, summary)
-    lines.append(f"📄 {md_link(item)}")
-    lines.append("")
     cat_str = f" · 分类：{', '.join(categories)}" if categories else ""
+    lines.append(f"📄 [{title}]({url})")
+    lines.append("")
+    # 📌 做什么：中文解读为主 + 原文摘要辅
+    doing = profile['doing']
     if summary:
-        lines.append(f"> 📌 摘要：{summary}{cat_str}  ")
+        lines.append(f"> 📌 做什么：{doing}  ")
+        lines.append(f"> 📄 原文：{summary}{cat_str}  ")
     else:
-        lines.append(f"> 📌 摘要：未获取{cat_str}  ")
+        lines.append(f"> 📌 做什么：{doing} {profile['why']}{cat_str}  ")
     lines.append("")
-    lines.append(f"> 💡 解读：{profile['doing']}  ")
+    lines.append(f"> 💡 价值：{profile['value']}  ")
     lines.append("")
-    lines.append(f"> 🔬 价值：{profile['value']}  ")
+    lines.append(f"> 💡 工程价值：{profile['engineering']}  ")
     lines.append("")
-    lines.append(f"> 🛠️ 工程价值：{profile['engineering']}  ")
+    lines.append("> 代码：未获取")
     lines.append("")
 
 
@@ -969,9 +1220,15 @@ def add_social(lines: list[str], source: str, label: str, count: int,
     for idx, item in enumerate(query_source(source, count * 3), 1):  # 多查一些用于跳过已用
         if used_keys and item_key(item) in used_keys:
             continue
-        lines.append(f"• {SOURCE_CN.get(source, source)}#{idx} {md_link(item)} · 热度{heat_display(item)}")
-        lines.append(f"> 💡 解读：{social_insight(source, item, idx)}")
         shown += 1
+        # 热度: 微博特殊处理（微博返回的是搜索排名点值, 非真实阅读量）
+        heat_val = heat_display(item)
+        if source == "weibo":
+            heat_label = f"热度{heat_val}(平台内)"
+        else:
+            heat_label = f"热度{heat_val}"
+        lines.append(f"• {SOURCE_CN.get(source, source)}#{shown} {md_link(item)} · {heat_label}")
+        lines.append(f"> 💡 解读：{social_insight(source, item, shown)}")
         if used_keys:
             used_keys.add(item_key(item))
         if shown >= count:

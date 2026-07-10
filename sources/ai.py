@@ -30,7 +30,23 @@ def source_arxiv() -> tuple[Optional[list[dict]], Optional[str]]:
                               "heat": '', "extra": {"source": "📜arXiv", "summary": summary, "categories": categories}})
         if items:
             return items, None
-    return rss_to_items("https://rss.arxiv.org/rss/cs.AI", "arXiv", "📜", 10, 72)
+        # RSS fallback: 也尝试解析摘要
+        rss_html = fetch_via_requests("https://rss.arxiv.org/rss/cs.AI",
+                                      {"User-Agent": DEFAULT_UA})
+        if rss_html and not rss_html.startswith("ERROR"):
+            import feedparser as _fp
+            _feed = _fp.parse(rss_html)
+            _items = []
+            for _e in _feed.entries[:10]:
+                _title = re.sub(r'\s+', ' ', _e.get('title', '').replace('\n', ' ').strip())
+                _link = _e.get('link', '')
+                _summary = clean_html_text(_e.get('description', _e.get('summary', '')))[:500]
+                if _title:
+                    _items.append({"id": _link or _title, "title": _title, "url": _link or '',
+                                   "heat": '', "extra": {"source": "📜arXiv", "summary": _summary}})
+            if _items:
+                return _items, None
+        return rss_to_items("https://rss.arxiv.org/rss/cs.AI", "arXiv", "📜", 10, 72)
 
 
 @register("huggingface", "🤗HFPapers")

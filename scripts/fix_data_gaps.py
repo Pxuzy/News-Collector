@@ -10,6 +10,10 @@ import json
 import urllib.request
 import time
 import sqlite3
+from datetime import datetime, timezone, timedelta
+
+# 脚本内使用的全局共享变量
+CST_TZ = timezone(timedelta(hours=8))  # UTC+8 东八区
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(SCRIPT_DIR, '..', 'cron', 'output', '_data_gaps_cache.json')
@@ -118,25 +122,97 @@ def fetch_github_weekly(limit=10):
     return repos
 
 def fetch_hn_comments(limit=15):
-    """从 HN Algolia API 获取 Points + Comments"""
-    try:
-        url = f'https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage={limit}'
-        req = urllib.request.Request(url, headers={'User-Agent': 'Hermes/1.0'})
-        resp = urllib.request.urlopen(req, timeout=15)
-        data = json.loads(resp.read())
-        results = {}
-        for hit in data.get('hits', []):
-            title = hit.get('title', '')
-            hn_id = hit.get('objectID', '')
-            results[title] = {
-                'points': hit.get('points', 0),
-                'comments': hit.get('num_comments', 0),
-                'hn_url': f'https://news.ycombinator.com/item?id={hn_id}',
-                'url': hit.get('url') or f'https://news.ycombinator.com/item?id={hn_id}'
-            }
-        return results
-    except Exception as e:
-        return {'_error': str(e)}
+    """从 HN Algolia API 获取 Points + Comments，支持重试 + 单条 fallback"""
+    import time as _time
+
+    # 主路径: Algolia 批量搜索
+    for attempt in range(3):
+        try:
+            url = f'https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage={limit}'
+            req = urllib.request.Request(url, headers={'User-Agent': 'Hermes/1.0'})
+            resp = urllib.request.urlopen(req, timeout=15)
+            data = json.loads(resp.read())
+            results = {}
+            for hit in data.get('hits', []):
+                hn_id = hit.get('objectID', '')
+                results[hn_id] = {
+                    'points': hit.get('points', 0),
+                    'comments': hit.get('num_comments', 0),
+                    'hn_url': f'https://news.ycombinator.com/item?id={hn_id}',
+                    'url': hit.get('url') or f'https://news.ycombinator.com/item?id={hn_id}',
+                    'title': hit.get('title', ''),
+                }
+            return results
+        except Exception as e:
+            if attempt < 2:
+                print(f'  ⚠️ HN Algolia 重试 {attempt+1}: {e}')
+                _time.sleep(3)
+                continue
+            print(f'[HN] Algolia 批量失败（{attempt+1}次）: {e}')
+
+    # 降级: 逐个请求 /item/{id}
+    print('[HN] 降级到逐条查询...')
+    return fetch_hn_comments_by_item(limit)
+
+
+def fetch_hn_comments_by_item(item_ids=None, limit=15):
+    """备用方案: 从 HN Firebase API 逐条获取 items（更稳健但慢）
+
+    Args:
+        item_ids: 需要查询的 item id 列表，不传则从 Algolia 取 top N
+        limit: 当 item_ids 为空时最多查多少条
+    """
+    import time as _time
+    import re as _re
+
+    results = {}
+
+    if item_ids:
+        ids = [str(iid) for iid in item_ids if iid]
+    else:
+        try:
+            url = f'https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage={limit}'
+            req = urllib.request.Request(url, headers={'User-Agent': 'Hermes/1.0'})
+            resp = urllib.request.urlopen(req, timeout=15)
+            data = json.loads(resp.read())
+            ids = [hit.get('objectID', '') for hit in data.get('hits', []) if hit.get('objectID')]
+        except Exception as e:
+            try:
+                html_req = urllib.request.Request(
+                    'https://news.ycombinator.com/',
+                    headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                html_resp = urllib.request.urlopen(html_req, timeout=15)
+                html = html_resp.read().decode('utf-8', errors='replace')
+                ids = _re.findall(r"<tr class='athing' id='(\d+)'>", html)[:limit]
+            except Exception as e2:
+                return {'_error': f'逐条降级也失败: {e2}'}
+
+    for i, hn_id in enumerate(ids):
+        if not hn_id:
+            continue
+        for attempt in range(3):
+            try:
+                url = f'https://hacker-news.firebaseio.com/v0/item/{hn_id}.json'
+                req = urllib.request.Request(url, headers={'User-Agent': 'Hermes/1.0'})
+                resp = urllib.request.urlopen(req, timeout=10)
+                item_data = json.loads(resp.read())
+                results[hn_id] = {
+                    'points': item_data.get('score', 0),
+                    'comments': item_data.get('descendants', 0),
+                    'hn_url': f'https://news.ycombinator.com/item?id={hn_id}',
+                    'url': item_data.get('url') or f'https://news.ycombinator.com/item?id={hn_id}',
+                    'title': item_data.get('title', ''),
+                }
+                break
+            except Exception as e:
+                if attempt < 2:
+                    _time.sleep(2)
+                    continue
+                print(f'    ⚠️ item/{hn_id} 失败: {e}')
+        _time.sleep(0.5)  # rate limit 保护
+    print(f'[HN] 逐条查询完成: {len(results)} 条')
+    return results
 
 def fetch_github_repo_info(repo_name):
     """从 GitHub API 获取单个仓库的语言、Stars、Topics"""
@@ -221,6 +297,30 @@ def main():
         result['hn_comments'] = hn_data
         count = len(hn_data)
         print(f'[HN] 获取 {count} 条')
+
+        # 补充不在 Algolia top 15 中的 DB 条目（已落榜的旧条目）
+        try:
+            conn = sqlite3.connect(NEWS_DB)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            # 取最近 3 天的 HN 条目 (含昨天至今, 覆盖时区截断问题)
+            cutoff = (datetime.now(CST_TZ) - timedelta(days=3)).isoformat()
+            db_ids = [r['id'] for r in cur.execute(
+                "SELECT id FROM news_items WHERE source='hackernews' AND last_seen >= ?",
+                (cutoff,)
+            ).fetchall()]
+            conn.close()
+        except Exception as exc:
+            print(f'[HN] DB 读取出错: {exc}')
+            db_ids = []
+        missing_ids = [iid for iid in db_ids if iid not in hn_data and iid]
+        if missing_ids:
+            print(f'[HN] DB 中还有 {len(missing_ids)} 个条目未覆盖，逐条补查...')
+            extra_data = fetch_hn_comments_by_item(missing_ids)
+            for k, v in extra_data.items():
+                if k not in hn_data:
+                    hn_data[k] = v
+            print(f'[HN] 补充后共 {len(hn_data)} 条')
 
     # === GitHub 补齐（动态读取 DB 实际热榜）===
     if 'github' in sources or 'all' in sources:
