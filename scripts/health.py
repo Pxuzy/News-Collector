@@ -14,7 +14,7 @@ for stream in (sys.stdout, sys.stderr):
         pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from store import _db as get_db, CST
+from store import _db as get_db, CST  # noqa: E402
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")

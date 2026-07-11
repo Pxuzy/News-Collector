@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 COLLECT_ONCE = os.path.join(SCRIPT_DIR, "collect_once.py")
+sys.path.insert(0, SCRIPT_DIR)
+from core import parse_parallel  # noqa: E402
 TZ_NAME = os.environ.get("TZ", "Asia/Shanghai")
 TZ = timezone(timedelta(hours=8), "Asia/Shanghai") if TZ_NAME != "UTC" else timezone.utc
 
@@ -89,8 +91,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--parallel",
-        type=int,
-        default=_env_int("COLLECT_PARALLEL", 8),
+        type=parse_parallel,
+        default=parse_parallel(os.environ.get("COLLECT_PARALLEL", "8")),
         help="Collector parallelism.",
     )
     parser.add_argument(

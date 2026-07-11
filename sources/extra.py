@@ -14,7 +14,7 @@ from sources import register
 # 之前已添加的源
 # ═══════════════════════════════════════════════
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 @register("reddit", "🤖Reddit热帖")
 def source_reddit() -> Tuple[Optional[list[dict]], Optional[str]]:
@@ -170,10 +170,14 @@ def source_dongqiudi() -> Tuple[Optional[list[dict]], Optional[str]]:
         aid = a.get('id', '')
         share = a.get('share', '') or a.get('url', '') or f"https://www.dongqiudi.com/article/{aid}"
         category = a.get('category', '体育')
+        desc = a.get('description', '') or ''
         if title:
+            extra = {"source": "⚽懂球帝", "sport": category}
+            if desc:
+                extra["desc"] = desc[:120]
             items.append({"id": f"dqd_{aid}", "title": title, "url": share,
                           "heat": '', "category": "体育",
-                          "extra": {"source": "⚽懂球帝", "sport": category}})
+                          "extra": extra})
     return items, None if items else "无数据"
 
 

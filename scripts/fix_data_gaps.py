@@ -176,7 +176,7 @@ def fetch_hn_comments_by_item(item_ids=None, limit=15):
             resp = urllib.request.urlopen(req, timeout=15)
             data = json.loads(resp.read())
             ids = [hit.get('objectID', '') for hit in data.get('hits', []) if hit.get('objectID')]
-        except Exception as e:
+        except Exception:
             try:
                 html_req = urllib.request.Request(
                     'https://news.ycombinator.com/',

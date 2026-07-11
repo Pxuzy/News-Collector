@@ -110,5 +110,5 @@ def all_group_names() -> list[str]:
 
 
 # 自动导入各源模块（触发 @register 装饰器）
-from . import domestic, bilibili, douyin, wallstreet, github, international, ai, extra
-from . import tech_foreign, tech_china
+from . import domestic, bilibili, douyin, wallstreet, github, international, ai, extra  # noqa: E402,F401
+from . import tech_foreign, tech_china  # noqa: E402,F401

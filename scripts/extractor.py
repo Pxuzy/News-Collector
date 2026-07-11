@@ -6,11 +6,12 @@ import sys
 import os
 import re
 import time
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(__file__))
 from core import DEFAULT_UA, fetch_via_requests
-from store import _db as get_db, update_summary
+from store import _db as get_db
 
 # 不需要提取正文的源
 HAS_TRAFILATURA = False
@@ -92,7 +93,7 @@ def run(batch=30, workers=4):
         SELECT n.id, n.source, n.title, n.url FROM news_items n
         LEFT JOIN articles a ON n.url=a.url AND a.content!=''
         WHERE a.url IS NULL AND n.url LIKE 'http%'
-        ORDER BY CAST(n.heat AS INTEGER) DESC, n.last_seen DESC
+        ORDER BY n.heat_score DESC, n.last_seen DESC
         LIMIT ?
     """, (batch,)).fetchall()
     conn.close()
@@ -112,24 +113,38 @@ def run(batch=30, workers=4):
         return r, body
 
     ok = 0
+    extracted = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         fut_map = {pool.submit(extract_one, r): r for r in rows}
         for fut in as_completed(fut_map):
             r, body = fut.result()
             if body:
                 summary = _gen_summary(body, r['title'])
-                conn2 = get_db()
-                conn2.execute(
-                    "INSERT OR IGNORE INTO articles(id,source,title,url,content,summary,fetched_at) VALUES(?,?,?,?,?,?,?)",
-                    (r['id'], r['source'], r['title'][:500], r['url'], body, summary,
-                     __import__('datetime').datetime.now().isoformat()))
-                conn2.commit()
-                conn2.close()
-                update_summary(r['source'], r['id'], summary)
+                extracted.append((r, body, summary))
                 ok += 1
                 print(f"  ✅ [{r['source']}] {r['title'][:40]}... {len(body)}字 ({engine_label})", flush=True)
             else:
                 print(f"  ⏭️ [{r['source']}] {r['title'][:40]}...", flush=True)
+
+    if extracted:
+        conn2 = get_db()
+        try:
+            fetched_at = datetime.now(timezone.utc).isoformat()
+            conn2.executemany(
+                "INSERT OR IGNORE INTO articles(id,source,title,url,content,summary,fetched_at) VALUES(?,?,?,?,?,?,?)",
+                [(r['id'], r['source'], r['title'][:500], r['url'], body, summary, fetched_at)
+                 for r, body, summary in extracted],
+            )
+            conn2.executemany(
+                "UPDATE news_items SET summary=? WHERE source=? AND id=?",
+                [(summary[:500], r['source'], r['id']) for r, _, summary in extracted],
+            )
+            conn2.commit()
+        except Exception:
+            conn2.rollback()
+            raise
+        finally:
+            conn2.close()
 
     print(f"\n✅ {ok}/{len(rows)} 条提取成功 (引擎:{engine_label})")
 

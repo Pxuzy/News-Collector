@@ -112,7 +112,7 @@ def validate(text: str) -> list[str]:
                 if required not in block:
                     errors.append(f"第 {start + 1} 行：GitHub 条目缺少 {required} 字段")
         if "HN#" in first:
-            if "Points" not in block and "points" not in block:
+            if "Points" not in block and "points" not in block and "热度积分" not in block:
                 errors.append(f"第 {start + 1} 行：HN 条目缺少 Points 字段")
             # 支持英文 Comments / comments 和中文「💬 N 条评论」两种格式
             if "Comments" not in block and "comments" not in block and "条评论" not in block:
@@ -120,7 +120,7 @@ def validate(text: str) -> list[str]:
             if "💡 解读" not in block:
                 errors.append(f"第 {start + 1} 行：HN 条目缺少 💡 解读")
         if "📜" in first or "arXiv#" in first:
-            for required in ("核心贡献", "工程价值", "局限", "💡 解读"):
+            for required in ("📌 做了什么", "✨ 创新", "🌊 意义", "👀 后续影响"):
                 if required not in block:
                     errors.append(f"第 {start + 1} 行：论文条目缺少 {required} 字段")
         if any(token in first for token in ("#1", "抖音#", "微博#", "知乎#", "百度#")):

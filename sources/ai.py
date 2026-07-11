@@ -3,7 +3,7 @@ AI/学术源 — arXiv / HuggingFace / AIHOT / TLDR / ProductHunt / Lobsters / D
 """
 import re
 from typing import Optional
-from core import fetch_json, fetch_via_requests, rss_to_items, clean_html_text
+from core import DEFAULT_UA, fetch_json, fetch_via_requests, rss_to_items, clean_html_text
 from sources import register
 
 
@@ -73,10 +73,14 @@ def source_aihot() -> tuple[Optional[list[dict]], Optional[str]]:
 
 @register("tldr_ai", "🤖TLDR AI")
 def source_tldr_ai() -> tuple[Optional[list[dict]], Optional[str]]:
+    saw_empty = False
     for url in ["https://tldr.tech/api/rss/ai", "https://www.tldr.tech/api/rss/ai"]:
         r = rss_to_items(url, "TLDR AI", "🤖", 5, 72)
-        if r[0]: return r
-    return None, "所有RSS都失败"
+        if r[0]:
+            return r
+        if r[0] == [] and r[1] is None:
+            saw_empty = True
+    return ([], None) if saw_empty else (None, "所有RSS都失败")
 
 
 @register("producthunt", "🚀ProductHunt")

@@ -30,7 +30,7 @@ CST = timezone(timedelta(hours=8))
 TOOLKIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB = os.path.join(TOOLKIT, "data", "news.db")
 sys.path.insert(0, os.path.join(TOOLKIT, "scripts"))
-from store import query, get_stats, _db
+from store import query, get_stats, _db  # noqa: E402
 
 FRESH_HOURS = 2  # 数据有效窗口
 

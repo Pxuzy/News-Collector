@@ -41,8 +41,6 @@ def _db():
     c.row_factory = sqlite3.Row
     if DB != ':memory:':
         c.executescript(
-            "PRAGMA journal_mode=WAL; "
-            "PRAGMA synchronous=NORMAL; "
             "PRAGMA foreign_keys=ON; "
             f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}"
         )
@@ -62,8 +60,64 @@ def _ensure_column(c, table: str, name: str, ddl: str):
         c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
+def _migrate_articles_url_constraint(c):
+    """Remove the legacy global UNIQUE(url) constraint without losing rows.
+
+    Idempotent: if a previous run left an ``articles_new`` orphan, it is
+    dropped first.  The full CREATE/COPY/DROP/RENAME sequence is wrapped in
+    ``BEGIN IMMEDIATE … COMMIT`` so a mid-flight crash rolls back and the
+    original ``articles`` table survives intact.
+
+    Note: Python ``sqlite3`` ``executescript()`` implicitly commits any
+    pending transaction, so we switch to autocommit mode and control the
+    transaction ourselves with explicit ``BEGIN``/``COMMIT``/``ROLLBACK``
+    and plain ``execute()`` calls.
+    """
+    # Clean up orphan from a previous failed migration
+    if c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='articles_new'"
+    ).fetchone():
+        c.execute("DROP TABLE articles_new")
+
+    schema = c.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='articles'"
+    ).fetchone()
+    if not schema or "UNIQUE" not in (schema[0] or "").upper():
+        return
+
+    # Save and restore isolation_level so init_db's caller is not surprised.
+    saved_isolation = c.isolation_level
+    c.isolation_level = None  # autocommit so we control BEGIN/COMMIT
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            c.execute("""CREATE TABLE articles_new (
+                id TEXT, source TEXT, title TEXT, url TEXT,
+                content TEXT DEFAULT '', summary TEXT DEFAULT '', fetched_at TEXT,
+                PRIMARY KEY (source, id)
+            )""")
+            c.execute("""INSERT INTO articles_new(id,source,title,url,content,summary,fetched_at)
+                SELECT id,source,title,url,content,summary,fetched_at FROM articles""")
+            c.execute("DROP TABLE articles")
+            c.execute("ALTER TABLE articles_new RENAME TO articles")
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            # Drop the orphan if ROLLBACK left it
+            if c.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='articles_new'"
+            ).fetchone():
+                c.execute("DROP TABLE articles_new")
+            raise
+    finally:
+        c.isolation_level = saved_isolation
+
+
 def init_db():
     c = _db()
+    if DB != ':memory:':
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
     c.executescript("""
         CREATE TABLE IF NOT EXISTS news_items (
             id TEXT, source TEXT, title TEXT, url TEXT,
@@ -80,7 +134,7 @@ def init_db():
             PRIMARY KEY (source, id)
         );
         CREATE TABLE IF NOT EXISTS articles (
-            id TEXT, source TEXT, title TEXT, url TEXT UNIQUE,
+            id TEXT, source TEXT, title TEXT, url TEXT,
             content TEXT DEFAULT '', summary TEXT DEFAULT '', fetched_at TEXT,
             PRIMARY KEY (source, id)
         );
@@ -112,14 +166,10 @@ def init_db():
         );
 
         -- 索引
-        DROP INDEX IF EXISTS idx_news_last_seen;
-        DROP INDEX IF EXISTS idx_news_source;
-        DROP INDEX IF EXISTS idx_ns;
-        DROP INDEX IF EXISTS idx_sr;
-        DROP INDEX IF EXISTS idx_cat;
-        DROP INDEX IF EXISTS idx_heat;
         CREATE INDEX IF NOT EXISTS idx_source_state_next ON source_state(enabled, next_run_at);
     """)
+
+    _migrate_articles_url_constraint(c)
 
     for name, ddl in {
         "heat_score": "INTEGER DEFAULT 0",
@@ -137,6 +187,10 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_news_heat_score ON news_items(heat_score DESC, last_seen DESC);
         CREATE INDEX IF NOT EXISTS idx_news_canonical ON news_items(canonical_key);
         CREATE INDEX IF NOT EXISTS idx_news_duplicate ON news_items(is_duplicate, duplicate_of);
+        CREATE INDEX IF NOT EXISTS idx_news_active_seen ON news_items(is_duplicate, last_seen);
+        CREATE INDEX IF NOT EXISTS idx_news_active_source_seen ON news_items(source, is_duplicate, last_seen);
+        CREATE INDEX IF NOT EXISTS idx_news_active_category_seen ON news_items(category, is_duplicate, last_seen);
+        CREATE INDEX IF NOT EXISTS idx_articles_url ON articles(url);
     """)
 
     fts_available = True
@@ -154,18 +208,15 @@ def init_db():
 
     if fts_available:
         c.executescript("""
-            DROP TRIGGER IF EXISTS news_ai;
-            DROP TRIGGER IF EXISTS news_ad;
-            DROP TRIGGER IF EXISTS news_au;
-            CREATE TRIGGER news_ai AFTER INSERT ON news_items BEGIN
+            CREATE TRIGGER IF NOT EXISTS news_ai AFTER INSERT ON news_items BEGIN
                 INSERT INTO news_fts(rowid, title, source)
                 VALUES (new.rowid, new.title, new.source);
             END;
-            CREATE TRIGGER news_ad AFTER DELETE ON news_items BEGIN
+            CREATE TRIGGER IF NOT EXISTS news_ad AFTER DELETE ON news_items BEGIN
                 INSERT INTO news_fts(news_fts, rowid, title, source)
                 VALUES ('delete', old.rowid, old.title, old.source);
             END;
-            CREATE TRIGGER news_au AFTER UPDATE ON news_items BEGIN
+            CREATE TRIGGER IF NOT EXISTS news_au AFTER UPDATE ON news_items BEGIN
                 INSERT INTO news_fts(news_fts, rowid, title, source)
                 VALUES ('delete', old.rowid, old.title, old.source);
                 INSERT INTO news_fts(rowid, title, source)
@@ -255,10 +306,17 @@ def upsert_news(items, source):
             canonical_key = _canonical_key(title, url)
             published_at = _published_at(item)
 
-            # 已存在? 用指纹判断是否真的更新了
-            existing = c.execute("SELECT seen_count,title,heat FROM news_items WHERE source=? AND id=?",
-                                (source, iid)).fetchone()
-            if existing:
+            # 先用原子 INSERT OR IGNORE 抢占主键，再更新冲突记录，避免
+            # “先 SELECT 再 INSERT”在并发采集时产生竞态。
+            inserted = c.execute("""INSERT OR IGNORE INTO news_items(
+                            id,source,title,url,heat,heat_score,category,tags,extra,
+                            first_seen,last_seen,seen_count,published_at,canonical_key,is_duplicate,duplicate_of)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,0,'')""",
+                         (iid, source, title, url, heat, heat_score, category, tags,
+                          extra, now, now, published_at, canonical_key)).rowcount
+            if inserted:
+                new += 1
+            else:
                 c.execute("""UPDATE news_items SET last_seen=?, seen_count=seen_count+1,
                              heat=CASE WHEN ?!='' THEN ? ELSE heat END,
                              heat_score=CASE WHEN ?>0 THEN ? ELSE heat_score END,
@@ -272,13 +330,6 @@ def upsert_news(items, source):
                            url, url, category, category, tags, extra,
                            published_at, published_at, canonical_key, source, iid))
                 updated += 1
-            else:
-                c.execute("""INSERT INTO news_items(id,source,title,url,heat,heat_score,category,tags,extra,
-                             first_seen,last_seen,seen_count,published_at,canonical_key,is_duplicate,duplicate_of)
-                             VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,0,'')""",
-                          (iid, source, title, url, heat, heat_score, category, tags,
-                           extra, now, now, published_at, canonical_key))
-                new += 1
 
             # 更新指纹
             c.execute("""INSERT INTO fingerprints(hash,source,news_id,title,first_seen,last_updated)
@@ -416,7 +467,7 @@ def build_query_params(keyword=None, days=None, source=None, category=None, incl
     params = []
     where = []
     if not include_duplicates:
-        where.append("COALESCE(is_duplicate,0)=0")
+        where.append("is_duplicate=0")
     if keyword:
         where.append("title LIKE ?")
         params.append(f"%{keyword}%")
@@ -452,7 +503,7 @@ def batch_query(sources: list[str], days: int = 1, limit: int = 15) -> dict[str,
         result = {}
         for src in sources:
             rows = c.execute(
-                "SELECT * FROM news_items WHERE source=? AND last_seen>=? AND COALESCE(is_duplicate,0)=0 ORDER BY heat_score DESC, last_seen DESC LIMIT ?",
+                "SELECT * FROM news_items WHERE source=? AND last_seen>=? AND is_duplicate=0 ORDER BY heat_score DESC, last_seen DESC LIMIT ?",
                 (src, cutoff, limit)
             ).fetchall()
             result[src] = [dict(r) for r in rows]
@@ -469,7 +520,7 @@ def query_by_categories(categories: list[str], days: int = 1, limit: int = 15) -
         result = {}
         for cat in categories:
             rows = c.execute(
-                "SELECT * FROM news_items WHERE category=? AND last_seen>=? AND COALESCE(is_duplicate,0)=0 ORDER BY heat_score DESC, last_seen DESC LIMIT ?",
+                "SELECT * FROM news_items WHERE category=? AND last_seen>=? AND is_duplicate=0 ORDER BY heat_score DESC, last_seen DESC LIMIT ?",
                 (cat, cutoff, limit)
             ).fetchall()
             result[cat] = [dict(r) for r in rows]
@@ -552,7 +603,7 @@ def fts_search(query, limit=20):
         c2 = _db()
         try:
             rows = c2.execute(
-                "SELECT * FROM news_items WHERE title LIKE ? AND COALESCE(is_duplicate,0)=0 ORDER BY last_seen DESC LIMIT ?",
+                "SELECT * FROM news_items WHERE title LIKE ? AND is_duplicate=0 ORDER BY last_seen DESC LIMIT ?",
                 (f"%{query}%", limit)
             ).fetchall()
             return [dict(r) for r in rows]
@@ -567,16 +618,16 @@ def get_stats(days=7):
     c = _db()
     cutoff = (datetime.now(CST)-timedelta(days=days)).isoformat()
     by_source = [dict(r) for r in c.execute(
-        "SELECT source,COUNT(*) as count,MAX(last_seen) as last FROM news_items WHERE last_seen>=? AND COALESCE(is_duplicate,0)=0 GROUP BY source ORDER BY count DESC",
+        "SELECT source,COUNT(*) as count,MAX(last_seen) as last FROM news_items WHERE last_seen>=? AND is_duplicate=0 GROUP BY source ORDER BY count DESC",
         (cutoff,)).fetchall()]
     by_category = [dict(r) for r in c.execute(
-        "SELECT category,COUNT(*) as count FROM news_items WHERE last_seen>=? AND category!='' AND COALESCE(is_duplicate,0)=0 GROUP BY category ORDER BY count DESC",
+        "SELECT category,COUNT(*) as count FROM news_items WHERE last_seen>=? AND category!='' AND is_duplicate=0 GROUP BY category ORDER BY count DESC",
         (cutoff,)).fetchall()]
     crawl_stats = [dict(r) for r in c.execute(
-        "SELECT source,SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) as ok_count,SUM(CASE WHEN status!='ok' THEN 1 ELSE 0 END) as fail_count FROM crawl_log WHERE started_at>=? GROUP BY source",
+        "SELECT source,SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) as ok_count,SUM(CASE WHEN status='empty' THEN 1 ELSE 0 END) as empty_count,SUM(CASE WHEN status IN ('failed','error') THEN 1 ELSE 0 END) as fail_count FROM crawl_log WHERE started_at>=? GROUP BY source",
         (cutoff,)).fetchall()]
-    total = c.execute("SELECT COUNT(*) FROM news_items WHERE last_seen>=? AND COALESCE(is_duplicate,0)=0", (cutoff,)).fetchone()[0]
-    new_today = c.execute("SELECT COUNT(*) FROM news_items WHERE first_seen>=? AND COALESCE(is_duplicate,0)=0", (cutoff,)).fetchone()[0]
+    total = c.execute("SELECT COUNT(*) FROM news_items WHERE last_seen>=? AND is_duplicate=0", (cutoff,)).fetchone()[0]
+    new_today = c.execute("SELECT COUNT(*) FROM news_items WHERE first_seen>=? AND is_duplicate=0", (cutoff,)).fetchone()[0]
     c.close()
     return {"total": total, "new": new_today, "days": days,
             "by_source": by_source, "by_category": by_category, "crawl_stats": crawl_stats}
@@ -622,7 +673,7 @@ def cross_source_dedup(delay_minutes=5, threshold=0.45) -> int:
         raw_rows = c.execute(
             """SELECT rowid, source, id, title, heat, heat_score, url
                FROM news_items
-               WHERE last_seen>=? AND COALESCE(is_duplicate,0)=0""",
+               WHERE last_seen>=? AND is_duplicate=0""",
             (cutoff,)
         ).fetchall()
         rows = [dict(r) for r in raw_rows]
@@ -632,15 +683,16 @@ def cross_source_dedup(delay_minutes=5, threshold=0.45) -> int:
         used = set()
         marked = 0
         norms = [(_norm(r.get("title", "")), r) for r in rows]
+        ngrams = [_ng(norm) if len(norm) >= 2 else set() for norm, _ in norms]
         for i, (base_norm, base_row) in enumerate(norms):
             if i in used or not base_norm:
                 continue
-            base_ng = _ng(base_norm)
+            base_ng = ngrams[i]
             cluster = [i]
             for j, (next_norm, next_row) in enumerate(norms[i + 1:], i + 1):
                 if j in used or not next_norm or next_row["source"] == base_row["source"]:
                     continue
-                next_ng = _ng(next_norm)
+                next_ng = ngrams[j]
                 if base_ng and next_ng and len(base_ng & next_ng) / len(base_ng | next_ng) > threshold:
                     cluster.append(j)
 
@@ -666,7 +718,9 @@ def cross_source_dedup(delay_minutes=5, threshold=0.45) -> int:
                 marked += 1
         c.commit()
         return marked
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger("collector").error(f"cross_source_dedup failed: {e}")
         c.rollback()
         return 0
     finally:

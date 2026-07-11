@@ -94,7 +94,7 @@ docker compose run --rm app python scripts/generate_briefing.py --skip-collect
 docker compose up -d api
 ```
 
-访问：
+访问（仅限宿主机本地，供 Hermes 使用）：
 
 ```text
 http://localhost:8899/health

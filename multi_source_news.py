@@ -15,8 +15,8 @@ SCRIPTS_DIR = os.path.join(PROJECT_DIR, "scripts")
 for path in (SCRIPTS_DIR, PROJECT_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
-from core import CST, get_interval
-from store import (
+from core import CST, get_interval, parse_parallel  # noqa: E402
+from store import (  # noqa: E402
     filter_due_sources,
     init_db,
     log_crawl,
@@ -26,9 +26,9 @@ from store import (
     cross_source_dedup,
     vacuum,
 )
-from sources import all_sources, core_sources
-from classifier import classify_batch
-from structured_log import setup_logger, log_crawl_event
+from sources import all_sources, core_sources  # noqa: E402
+from classifier import classify_batch  # noqa: E402
+from structured_log import setup_logger, log_crawl_event  # noqa: E402
 
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'output', 'collector_runs')
 LOG_DIR = os.path.join(PROJECT_DIR, 'logs')
@@ -44,19 +44,24 @@ def collect_one(src_id, label, func):
         items, err = func()
         elapsed = time.time() - start
         duration_ms = int(elapsed * 1000)
-        if items is not None:
+        if items is not None and items:
             # 空热度 fallback: 用列表位置生成伪热度
             for i, item in enumerate(items):
                 if not item.get('heat'):
                     item['heat'] = str(max(1, len(items) - i))
 
             # AI 自动分类 + 标签
-            items = classify_batch(items)
+            items = classify_batch(items, source=src_id)
             new, updated = upsert_news(items, src_id)
             log_crawl(src_id, 'ok', len(items), duration_ms=duration_ms,
                       interval_seconds=get_interval(src_id), label=label)
             log_crawl_event(src_id, 'ok', len(items), duration_ms, new=new, updated=updated)
             return {"label": label, "count": len(items), "new": new, "updated": updated, "status": "ok"}
+        elif items == []:
+            log_crawl(src_id, 'empty', 0, err or "源返回空列表", duration_ms=duration_ms,
+                      interval_seconds=get_interval(src_id), label=label)
+            log.warning(f"  {label} ⚠️ 空结果 ({elapsed:.1f}s)")
+            return {"label": label, "count": 0, "status": "empty", "error": err or "empty result"}
         else:
             log_crawl(src_id, 'failed', 0, err, duration_ms=duration_ms,
                       interval_seconds=get_interval(src_id), label=label)
@@ -76,7 +81,8 @@ def main():
     parser = argparse.ArgumentParser(description="多源新闻聚合采集器 v5.0")
     parser.add_argument("--core", action="store_true", help="只采集核心源")
     parser.add_argument("--source", help="逗号分隔的源 ID；优先于 --core")
-    parser.add_argument("--parallel", type=int, default=6, help="并行数 (默认6)")
+    parser.add_argument("--parallel", type=lambda value: parse_parallel(value, default=6), default=6,
+                        help="并行数 (默认6，范围1-32)")
     parser.add_argument("--prune", action="store_true", help="采集前清理过期数据")
     parser.add_argument("--vacuum", action="store_true", help="采集后 VACUUM 回收空间")
     parser.add_argument("--force", action="store_true", help="忽略 source_state 的 next_run_at")
@@ -141,6 +147,7 @@ def main():
 
     ok = sum(1 for r in results.values() if r['status'] == 'ok')
     failed = sum(1 for r in results.values() if r['status'] in ('failed', 'error'))
+    empty = sum(1 for r in results.values() if r['status'] == 'empty')
     skipped = sum(1 for r in results.values() if r['status'] == 'skipped')
     total = sum(r.get('count', 0) for r in results.values())
     total_new = sum(r.get('new', 0) for r in results.values())
@@ -149,7 +156,7 @@ def main():
     # 跨源去重
     deduped = cross_source_dedup(delay_minutes=1440, threshold=0.45) if targets else 0
     if deduped > 0:
-        log.info(f"🧹 跨源去重: 删除了 {deduped} 条重复")
+        log.info(f"🧹 跨源去重: 标记了 {deduped} 条重复")
 
     # 保存JSON
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -158,7 +165,7 @@ def main():
         "timestamp": datetime.now(CST).isoformat(),
         "summary": {"ok": ok, "failed": failed, "total": total,
                     "new": total_new, "updated": total_updated,
-                    "deduped": deduped, "skipped": skipped},
+                    "deduped": deduped, "skipped": skipped, "empty": empty},
         "sources": results,
     }
     ts = datetime.now(CST).strftime('%Y%m%d_%H%M')
@@ -206,7 +213,8 @@ def main():
     log.info(f"{'='*50}")
     log.info(f"采集完成: ✅{ok}个源  ❌{failed}失败  ⏭️{skipped}跳过  📦{total}条(+{total_new}新/+{total_updated}更新)  🧹去重{deduped}  {out}")
     log.info(f"{'='*50}")
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

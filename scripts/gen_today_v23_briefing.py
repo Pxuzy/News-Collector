@@ -180,6 +180,60 @@ def query_categories(categories: list[str], limit: int = 10) -> list[dict]:
     return query_sql(f"category IN ({placeholders})", list(categories), limit)
 
 
+HOTLIST_SOURCES = {"baidu", "toutiao", "weibo", "zhihu", "douyin", "bilibili_pop", "bilibili", "ithome", "36kr", "thepaper", "tencent"}
+
+
+def query_hotlist(category: str, limit: int = 10) -> list[dict]:
+    """从热榜平台源查询指定分类的条目"""
+    placeholders = ",".join("?" for _ in HOTLIST_SOURCES)
+    return query_sql(f"source IN ({placeholders}) AND category=?", list(HOTLIST_SOURCES) + [category], limit)
+
+
+def query_hotlist_for_title(keyword: str, limit: int = 3) -> list[dict]:
+    """从热榜平台源按标题关键词搜索热门条目"""
+    placeholders = ",".join("?" for _ in HOTLIST_SOURCES)
+    return query_sql(f"source IN ({placeholders}) AND title LIKE ?", list(HOTLIST_SOURCES) + [f"%{keyword}%"], limit)
+
+
+MAIN_HOTLIST_KEYWORDS = ("台风", "巴威", "A股", "航天", "火箭回收", "救援", "涨价", "地震", "事故", "奥运")
+MAIN_FALLBACK_CATEGORIES = ("社会", "军事", "财经", "AI", "综合")
+
+
+def select_main_items(limit: int = 5) -> list[dict]:
+    """Select main-line items with hotlist/category fallbacks when keyword hits are sparse."""
+    items: list[dict] = []
+    for keyword in MAIN_HOTLIST_KEYWORDS:
+        items.extend(query_hotlist_for_title(keyword, 3))
+    selected = unique(items, limit)
+    if len(selected) >= limit:
+        return selected
+
+    fallback_items: list[dict] = []
+    for category in MAIN_FALLBACK_CATEGORIES:
+        fallback_items.extend(query_hotlist(category, max(limit * 2, 10)))
+    # Keep the historical category fallback as a final safety net for sources
+    # that classify an item but are not registered as a hotlist source.
+    fallback_items.extend(query_categories(list(MAIN_FALLBACK_CATEGORIES), max(limit * 2, 10)))
+    return unique(selected + fallback_items, limit)
+
+
+def domestic_sections() -> list[tuple[str, str, list[dict]]]:
+    """Build domestic sections, retaining broad hotlist categories as fallbacks."""
+    return [
+        ("🌍 **时政·外交**", "时政·外交", query_hotlist("时政", 8) + query_hotlist("军事", 6)),
+        ("💰 **财经·商业**", "财经·商业", query_hotlist("财经", 8) + query_source("wallstreetcn", 3)),
+        ("🔬 **科技·数码**", "科技·数码", query_hotlist("科技", 8) + query_source("ithome", 3)),
+        ("🚗 **汽车·能源**", "汽车·能源", query_hotlist("汽车·能源", 6) + search_titles(["汽车", "新能源", "电池", "油价", "充电"], 6)),
+        ("🎬 **娱乐·综艺**", "娱乐·综艺", query_hotlist("娱乐", 6) + query_source("bilibili_pop", 3)),
+        ("⚽ **体育·赛事**", "体育·赛事", query_hotlist("体育", 6) + query_source("dongqiudi", 3)),
+        # Some hotlist adapters classify broad social items as 综合, 教育, or 健康.
+        ("🌞 **社会·民生**", "社会·民生",
+         query_hotlist("社会", 10) + query_hotlist("综合", 8)
+         + query_hotlist("教育", 4) + query_hotlist("健康", 4)),
+    ]
+
+
+
 def search_titles(keywords: list[str], limit: int = 10) -> list[dict]:
     clauses = " OR ".join("title LIKE ?" for _ in keywords)
     params = [f"%{kw}%" for kw in keywords]
@@ -326,11 +380,12 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
                 "followup": "看官方确认、融资文件、芯片规格、制程供应和第三方性能测试。",
                 "insight": "这类 AI 产业新闻要优先验证来源和硬指标，不能只看社媒热度。",
             }
+        anchor = clean(title, 28)
         return {
             "event": fallback_event,
-            "impact": "它可能影响模型能力、开发者工具链或 AI 应用落地，但需要先区分发布、传闻、社区讨论和真实产品更新。",
-            "followup": "看官方资料、独立评测、代码/论文、API 价格和真实用户反馈。",
-            "insight": "AI 条目的价值取决于可复现能力、成本和集成路径，标题热度本身不是结论。",
+            "impact": f"AI 条目“{anchor}”可能影响模型能力、工具链或应用落地，需先核对发布内容和真实使用证据。",
+            "followup": f"围绕“{anchor}”查看官方资料、独立评测、代码/论文、价格和用户反馈。",
+            "insight": f"对“{anchor}”的判断重点是可复现性、部署成本和集成路径，标题热度不能替代验证。",
         }
 
     if section == "时政·外交":
@@ -371,11 +426,12 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
                 "followup": "看具体投资时间表、产品实测反馈、API 开放程度和竞品跟进情况。",
                 "insight": "这类信息在时政分类下被捕获，但实质是科技/财经新闻，应切换到对应行业逻辑判断。",
             }
+        anchor = clean(title, 28)
         return {
             "event": fallback_event,
-            "impact": "这类国际事件主要影响安全预期、外交沟通、援助资源或区域稳定，不能按普通财经或社媒传播逻辑解读。",
-            "followup": "看官方通报、当事国回应、后续伤亡/制裁/援助数据，以及 Reuters/BBC 等权威源是否持续更新。",
-            "insight": "国际新闻要优先核实事实链和时间线，热度只说明关注度，不等于事件已经定性。",
+            "impact": f"国际条目“{anchor}”可能影响安全预期、外交沟通或区域稳定，具体程度要看权威数据和各方行动。",
+            "followup": f"围绕“{anchor}”查看官方通报、当事国回应和后续数据，确认是否出现新的事实进展。",
+            "insight": f"对“{anchor}”应先核实事实链和时间线，再区分关注度、政治表态与已经发生的实际变化。",
         }
 
     # ── 通用 section 关键词分析 ──────────────────────────
@@ -384,7 +440,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
     if contains_any(blob, ["台风", "巴威", "暴雨", "洪水", "洪灾", "防汛", "灾害", "预警", "救灾", "应急", "洪涝"]):
         return {
             "event": fallback_event,
-            "impact": f"极端天气事件直接影响人员安全、交通出行、农业收成和基础设施，已触发多地应急响应。",
+            "impact": "极端天气事件直接影响人员安全、交通出行、农业收成和基础设施，已触发多地应急响应。",
             "followup": "看中央气象台最新路径预报、地方防汛指挥部转移/停航/停课安排，以及受灾区域后续恢复进展。",
             "insight": f"天气类热点关注实时路径和官方预警级别变化，不要被单平台高热度过度渲染恐慌。\"{clean(title, 35)}\"的核心看点是风雨影响范围和持续时长。",
         }
@@ -393,9 +449,9 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
     if contains_any(blob, ["火灾", "起火", "爆炸", "坍塌", "事故", "安全", "死亡", "伤亡", "被困", "遇难"]):
         return {
             "event": fallback_event,
-            "impact": f"安全事故直接关系公共安全和应急管理能力，事故原因和处置进度是关注焦点。",
+            "impact": "安全事故直接关系公共安全和应急管理能力，事故原因和处置进度是关注焦点。",
             "followup": "看应急管理部通报、涉事单位回应、伤亡人数更新、事故原因调查和责任认定进展。",
-            "insight": f"安全类事件要优先核实官方通报数字，前期社媒传播的热度数字往往与最终官方核定数据存在差异。",
+            "insight": "安全类事件要优先核实官方通报数字，前期社媒传播的热度数字往往与最终官方核定数据存在差异。",
         }
 
     # A股/股市/金融
@@ -404,7 +460,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": f"市场波动：{clean(title, 50)}",
             "impact": "A股活跃度变化会影响投资者情绪、两融余额和板块轮动节奏，需区分短期情绪和基本面变化。",
             "followup": "看次日成交量、北向资金流向、政策面信号、板块龙头财报和外围市场联动。",
-            "insight": f"股市热点需要区分是政策驱动、资金驱动还是情绪驱动，单日行情不能直接判断趋势反转。",
+            "insight": "股市热点需要区分是政策驱动、资金驱动还是情绪驱动，单日行情不能直接判断趋势反转。",
         }
 
     # 芯片/科技制造
@@ -413,7 +469,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": f"半导体/科技制造动态：{clean(title, 50)}",
             "impact": "芯片制造和存储领域的估值变化反映市场对国产替代和技术突破的预期，同时也受全球供需周期影响。",
             "followup": "看公司公告、产品良率、客户订单、设备交付进度和行业第三方产能报告。",
-            "insight": f"半导体估值新闻要区分市场融资估值、可比公司估值和实际营收之间的差距，高估值不等于已经实现技术突破。",
+            "insight": "半导体估值新闻要区分市场融资估值、可比公司估值和实际营收之间的差距，高估值不等于已经实现技术突破。",
         }
 
     # 地震/地质灾害
@@ -422,7 +478,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": fallback_event,
             "impact": "地震直接影响当地居民安全、建筑设施和交通秩序，震后次生灾害风险也需要持续关注。",
             "followup": "看中国地震台网正式测定数据、地方应急响应、人员伤亡排查和救灾物资调度。",
-            "insight": f"地震信息以中国地震台网和中国地震局发布为准，社媒传播的伤亡数字需等待官方核对确认。",
+            "insight": "地震信息以中国地震台网和中国地震局发布为准，社媒传播的伤亡数字需等待官方核对确认。",
         }
 
     # 体育/赛事
@@ -432,7 +488,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": f"体育赛事热讯：{clean(title, 50)}",
             "impact": "赛事结果影响球队晋级形势、球员商业化价值和球迷社群活跃度。关键比赛还会带动周边讨论。",
             "followup": "看赛后复盘、关键球员伤情、下一场对阵安排和赛事官方数据确认。",
-            "insight": f"体育热点的核心不是比分本身，而是关键球员表现、争议判罚和后续晋级路径。",
+            "insight": "体育热点的核心不是比分本身，而是关键球员表现、争议判罚和后续晋级路径。",
         }
 
     # AI 相关（在非 AI section 中出现的 AI 内容）
@@ -493,13 +549,13 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
                 "event": f"中国新能源车出海新动态：{clean(title, 50)}",
                 "impact": "中国新能源车企加速全球化布局，欧洲市场定价和渠道策略是观察品牌溢价和本地化能力的关键窗口。",
                 "followup": "看欧洲NCAP测试成绩、当地充电网络兼容性、交付数据和后续车型规划。",
-                "insight": f"出海新闻要看实际交付量和当地消费者评价，发布定价和媒体热度只是第一步，真正验证在后续销量。",
+                "insight": "出海新闻要看实际交付量和当地消费者评价，发布定价和媒体热度只是第一步，真正验证在后续销量。",
             }
         return {
             "event": f"新能源车动态：{clean(title, 50)}",
             "impact": "新能源车企新车发布、技术迭代和价格策略直接影响市场竞争格局和消费者选择。800V高压平台和智能驾驶是当前主要竞争点。",
             "followup": "看车型交付时间表、实际续航测试、智能驾驶功能和终端售价变化。",
-            "insight": f"新车发布的热度需要关注的是正式售价、配置差异和交付节奏，而不是仅看展车和概念阶段的关注度。",
+            "insight": "新车发布的热度需要关注的是正式售价、配置差异和交付节奏，而不是仅看展车和概念阶段的关注度。",
         }
 
     # 游戏/电竞
@@ -509,7 +565,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": f"游戏动态：{clean(title, 50)}",
             "impact": "新游曝光和预售数据反映玩家期待度和市场热度，首曝PV品质和玩法实机演示是判断产品质量的关键。",
             "followup": "看后续媒体试玩评测、Steam Wishlist/预约量、开发商过往作品口碑和正式发售日。",
-            "insight": f"游戏首曝热度不等于最终品质，重点看玩法创新、优化水平、定价策略和社区长线反馈。",
+            "insight": "游戏首曝热度不等于最终品质，重点看玩法创新、优化水平、定价策略和社区长线反馈。",
         }
 
     # 碳达峰/环保/气候政策
@@ -518,7 +574,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": f"气候政策与绿色转型：{clean(title, 50)}",
             "impact": "碳达峰工作推进直接影响能源结构转型、产业升级节奏和绿色金融规模，是中长期政策主线。",
             "followup": "看具体行业减排路线图、碳交易市场动态、重点行业排放数据和绿色技术创新进展。",
-            "insight": f"碳达峰是长线政策，需要区分短期工作部署和长期目标调整，不要因为阶段性热度判断政策方向已经变化。",
+            "insight": "碳达峰是长线政策，需要区分短期工作部署和长期目标调整，不要因为阶段性热度判断政策方向已经变化。",
         }
 
     # 基础设施/公共政策
@@ -527,7 +583,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": f"公共设施与政策调整：{clean(title, 50)}",
             "impact": "景区设施调整直接关系游客体验、公共安全和旅游形象，整改方案和替代措施的效果是关注重点。",
             "followup": "看景区官方整改方案、施工时间表、公众意见征集和实际改造效果反馈。",
-            "insight": f"公共设施类新闻的核心是方案可行性和落地时间表，社媒上的情绪反应不等同于政策质量。",
+            "insight": "公共设施类新闻的核心是方案可行性和落地时间表，社媒上的情绪反应不等同于政策质量。",
         }
 
     # 手机/数码产品
@@ -537,7 +593,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": f"数码产品动态：{clean(title, 50)}",
             "impact": "数码产品功能更新和平台策略调整直接影响用户体验、市场竞争格局和开发者生态。",
             "followup": "看官方发布详情、第三方评测、用户反馈和竞品跟进策略。",
-            "insight": f"数码产品热点需要区分功能需求讨论和实际产品发布，社媒上的功能呼吁不等于产品路线图。",
+            "insight": "数码产品热点需要区分功能需求讨论和实际产品发布，社媒上的功能呼吁不等于产品路线图。",
         }
 
     # 安全/治安/犯罪
@@ -547,7 +603,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": f"社会安全事件：{clean(title, 50)}",
             "impact": "个人安全事件和高发诈骗手法最容易引发公众焦虑和自我保护意识，传播速度在社媒上极快。",
             "followup": "看警方通报和调查进展、涉事平台回应、同类案件数据以及防骗/防盗指南更新。",
-            "insight": f"安全类热点需区分真实案件和社媒传播放大的部分，优先确认警方核实和当事人后续进展。",
+            "insight": "安全类热点需区分真实案件和社媒传播放大的部分，优先确认警方核实和当事人后续进展。",
         }
 
     # 电影/娱乐/票房
@@ -557,7 +613,7 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
             "event": f"文娱/票房动态：{clean(title, 50)}",
             "impact": "票房预售数据反映观众期待度，是判断宣传效果和首周表现的前瞻指标。",
             "followup": "看首周末实际票房、口碑评分、排片占比和二刷率，区分预售转化率和实际上座率。",
-            "insight": f"票房类热度需要区分预售和实际观影体验口碑，高预售不等于高口碑，重点是上映后的长线表现。",
+            "insight": "票房类热度需要区分预售和实际观影体验口碑，高预售不等于高口碑，重点是上映后的长线表现。",
         }
 
     # 医疗/健康
@@ -565,18 +621,18 @@ def item_specific_wording(item: dict, section: str, fallback_event: str) -> dict
                            "保健", "药品", "医保", "shou", "疾病", "医院"]):
         return {
             "event": f"医疗健康事件：{clean(title, 50)}",
-            "impact": f"医疗安全事件直接关系患者权益和医疗服务质量管理，引发公众对诊疗流程和安全保障的关注。",
+            "impact": "医疗安全事件直接关系患者权益和医疗服务质量管理，引发公众对诊疗流程和安全保障的关注。",
             "followup": "看医院官方说明、卫健委调查结论、家属沟通进展和同类医疗纠纷数据。",
-            "insight": f"医疗新闻需要以官方通报和第三方医学意见为准，社媒传播的患者个案不能代表整体医疗质量。",
+            "insight": "医疗新闻需要以官方通报和第三方医学意见为准，社媒传播的患者个案不能代表整体医疗质量。",
         }
 
-    # 默认：从标题生成有上下文的具体文案
-    wording = SECTION_WORDING[section]
+    # 默认文案也绑定当前标题，避免同一板块所有条目复用完全相同的三句模板。
+    anchor = clean(title, 28)
     return {
         "event": fallback_event,
-        "impact": wording["impact"],
-        "followup": wording["followup"],
-        "insight": wording["insight"],
+        "impact": f"“{anchor}”涉及的具体影响，需要结合事件对象、时间范围和权威数据判断，当前不能只凭热度下结论。",
+        "followup": f"围绕“{anchor}”查看官方回应、后续数据和当事方行动，重点确认是否出现新的可验证进展。",
+        "insight": f"本条的判断重点是核对“{anchor}”的事实链，再区分短期关注度与长期影响。",
     }
 
 
@@ -585,8 +641,21 @@ def add_news_block(lines: list[str], item: dict, section: str, ranks: dict[str, 
     source_name = SOURCE_CN.get(item.get("source", ""), item.get("source", ""))
     fallback_event = f"围绕“{title}”的最新进展成为{source_name}热点，当前仍在发酵。"
     wording = item_specific_wording(item, section, fallback_event)
+    anchor = clean(title, 28)
+    for field in ("impact", "followup", "insight"):
+        wording[field] = f"{wording[field]} 本条主题为：{anchor}。"
     extra = parse_extra(item)
     has_real_desc = bool(clean(extra.get("hover") or extra.get("desc") or extra.get("description") or item.get("summary")))
+    if item.get("source") in HOTLIST_SOURCES and not has_real_desc:
+        heat_val = heat_display(item)
+        lines.append(f"{dot} {md_link(item)}")
+        lines.append("")
+        lines.append(f"> 📍 来源：{source_line(item, ranks)}  ")
+        lines.append(f"> 🔥 热度：{heat_val}（平台热榜值）  ")
+        lines.append(f"> 💡 解读：{social_news_insight(item)} 本条主题为：{title}。  ")
+        lines.append(f"> ✅ 可信度：{source_line(item, ranks)}，属于平台热榜信号，需结合原始链接核验")
+        lines.append("")
+        return
     lines.append(f"{dot} {md_link(item)}")
     lines.append("")
     lines.append(f"> 📍 来源：{source_line(item, ranks)}  ")
@@ -595,9 +664,9 @@ def add_news_block(lines: list[str], item: dict, section: str, ranks: dict[str, 
     lines.append(f"> 👀 后续：{wording['followup']}  ")
     lines.append(f"> 💡 解读：{wording['insight']}  ")
     if has_real_desc:
-        lines.append("> ✅ 可信度：基于实际摘要/描述" if clean(item.get("url")) else "> ✅ 可信度：多平台交叉验证")
+        lines.append(f"> ✅ 可信度：{source_line(item, ranks)}；已获取摘要/描述，仍建议回看原始链接")
     else:
-        lines.append("> ✅ 可信度：数据缺口，需结合原始链接核验")
+        lines.append(f"> ✅ 可信度：{source_line(item, ranks)}；当前缺少摘要，需结合原始链接核验")
     lines.append("")
 
 
@@ -999,11 +1068,33 @@ def hn_chinese_profile(title: str, points: str = "", comments: str = "") -> dict
 
 
 def _hn_cn_title(title: str) -> str:
-    """将英文 HN 标题浓缩为中文字段（保留核心信息, 最长 60 字）"""
-    t = clean(title, 60)
+    """将英文 HN 标题转换为中文字段；专有名词保留原名。"""
+    t = clean(title, 90)
     if not t:
         return "标题未获取"
-    return t
+    replacements = (
+        ("Show HN:", "展示项目："), ("Show HN", "展示项目"),
+        ("Launch HN:", "创业发布："), ("Launch HN", "创业发布"),
+        ("Ask HN:", "社区提问："), ("Ask HN", "社区提问"),
+        ("How to ", "如何"), ("A new way to ", "一种新的方法："),
+        ("The ", ""), (" and ", "与"), (" with ", "与"),
+        (" without ", "无需"), (" for ", "用于"), (" from ", "来自"),
+        (" in ", "中的"), (" of ", "的"), (" using ", "使用"),
+        ("open source", "开源"), ("Open Source", "开源"),
+        ("security", "安全"), ("privacy", "隐私"), ("database", "数据库"),
+        ("compiler", "编译器"), ("browser", "浏览器"), ("video", "视频"),
+        ("model", "模型"), ("models", "模型"), ("agent", "智能体"),
+        ("agents", "智能体"), ("research", "研究"), ("paper", "论文"),
+        ("system", "系统"), ("tools", "工具"), ("tool", "工具"),
+        ("An update on ", "关于……的更新："), ("Introducing ", "推出："),
+    )
+    translated = t
+    for source, target in replacements:
+        translated = translated.replace(source, target)
+    translated = re.sub(r"\s+", " ", translated).strip(" -:：")
+    if re.search(r"[A-Za-z]{4,}", translated):
+        translated = f"技术社区话题：{translated}"
+    return clean(translated, 70)
 
 
 def discussion_signal(points: object, comments: object) -> str:
@@ -1043,18 +1134,18 @@ def add_hn_item(lines: list[str], item: dict, rank: int, cache: dict) -> None:
     url = cached.get("hn_url") or clean(item.get("url")) or "链接未获取"
     title = clean(item.get("title"), 90)
     profile = hn_chinese_profile(title, points, comments)
-    cn_title = profile.get("cn_title", title)
+    cn_title = _hn_cn_title(profile.get("cn_title", title))
     event = profile.get("event", "")
-    impact = profile.get("impact", "")
-    insight = profile.get("insight", "")
+    impact = f"{profile.get('impact', '')} 本条主题为：{cn_title}，需要结合原始文章确认具体影响。"
+    insight = f"{profile.get('insight', '')} 针对本条主题：{cn_title}，还要区分社区观点与已验证事实。"
     signal = discussion_signal(points, comments)
 
-    lines.append(f"• HN#{rank} [{title}]({url})")
+    lines.append(f"• HN#{rank} [{cn_title}]({url})")
     lines.append("")
     lines.append(f"> 🀄 中文：{cn_title}  ")
     lines.append(f"> 📌 事件：{event}  ")
     if points:
-        lines.append(f"> 🔥 热度：{points} points · 💬 {comments} 条评论  ")
+        lines.append(f"> 🔥 热度积分：{points} · 💬 {comments} 条评论  ")
     lines.append(f"> 🌊 影响：{impact}  ")
     lines.append(f"> 💡 解读：{insight} {signal}  ")
     lines.append("")
@@ -1119,28 +1210,64 @@ def paper_profile(title: str, summary: str = "") -> dict[str, str]:
     }
 
 
+def paper_dimensions(title: str, summary: str) -> dict[str, str]:
+    """把论文摘要压缩成做法、创新、意义、后续影响四个中文维度。"""
+    blob = words_for(title, summary)
+    if contains_any(blob, ("benchmark", "evaluation", "dataset", "leaderboard")):
+        return {
+            "innovation": "创新点在于把任务、数据和评价指标统一到同一套可重复基准中，便于横向比较，而不只是展示单个方法的最好结果。",
+            "meaning": "这能帮助研究者判断方法是否真的提升了能力，也能让工程团队更早发现模型在真实任务中的短板。",
+            "impact": "后续影响取决于基准是否被更多团队采用，以及结果能否在不同数据、设备和成本约束下复现。",
+        }
+    if contains_any(blob, ("agent", "agents", "planning", "trajectory", "action")):
+        return {
+            "innovation": "创新点是把智能体的规划、行动和反馈过程纳入统一方法或评测，而不是只测一次问答的最终答案。",
+            "meaning": "这为长期任务自动化提供了更接近真实工作的评价视角，重点转向任务完成率、失败恢复和资源消耗。",
+            "impact": "后续要看它能否迁移到真实工具链、复杂环境和多人协作流程，并验证成本是否低于人工执行。",
+        }
+    if contains_any(blob, ("retrieval", "rag", "knowledge", "external memory", "memory")):
+        return {
+            "innovation": "创新点是把外部知识或记忆结构接入模型推理流程，减少只依靠参数记忆造成的遗漏和过时信息。",
+            "meaning": "这对需要可更新知识、来源追溯和较低幻觉率的问答、检索和企业知识库场景更有价值。",
+            "impact": "后续影响取决于检索准确率、延迟、数据更新成本和引用是否可靠，不能只看离线指标。",
+        }
+    if contains_any(blob, ("efficient", "efficiency", "cost", "speed", "accelerat", "scalable")):
+        return {
+            "innovation": "创新点集中在降低计算量、推理延迟或部署成本，并用实验比较效率与效果之间的取舍。",
+            "meaning": "如果效果没有明显下降，这类工作能扩大模型在边缘设备、低预算团队和高并发服务中的可用范围。",
+            "impact": "后续要看真实硬件、不同规模模型和峰值负载下的收益，避免把实验室加速直接等同于生产降本。",
+        }
+    return {
+        "innovation": "从摘要可确认的创新是围绕目标问题设计新的方法或分析框架；具体超越现有工作的部分仍需核对实验和基线。",
+        "meaning": "它的意义在于为该问题提供一个可检验的解决路径，价值不应只由标题或单一指标决定。",
+        "impact": "后续影响要看代码、数据、复现实验和其他团队的独立验证，尤其关注适用边界与失败案例。",
+    }
+
+
 def add_paper_item(lines: list[str], item: dict) -> None:
     title = clean(item.get("title"), 100)
+    display_title = _hn_cn_title(title)
     url = clean(item.get("url")) or "链接未获取"
     extra = parse_extra(item)
     summary = clean(item.get("summary") or extra.get("summary") or extra.get("desc"), 240)
-    categories = extra.get("categories", [])
     profile = paper_profile(title, summary)
-    cat_str = f" · 分类：{', '.join(categories)}" if categories else ""
-    lines.append(f"📄 [{title}]({url})")
+    lines.append(f"📄 [{display_title}]({url})")
     lines.append("")
     # 中文概括解读（不贴原文英文摘要）
     if summary:
         cn_doing = _paper_cn_reading(title, summary)
     else:
         cn_doing = f"{profile['doing']} {profile['why']}"
-    lines.append(f"> 📌 解读：{cn_doing}  ")
+    dimensions = paper_dimensions(title, summary)
+    for field in ("innovation", "meaning", "impact"):
+        dimensions[field] = f"{dimensions[field]} 本研究聚焦于{display_title}这一对象。"
+    lines.append(f"> 📌 做了什么：{cn_doing}  ")
     lines.append("")
-    lines.append(f"> 💡 价值：{profile['value']}  ")
+    lines.append(f"> ✨ 创新：{dimensions['innovation']}  ")
     lines.append("")
-    lines.append(f"> 💡 工程价值：{profile['engineering']}  ")
+    lines.append(f"> 🌊 意义：{dimensions['meaning']}  ")
     lines.append("")
-    lines.append("> 代码：未获取")
+    lines.append(f"> 👀 后续影响：{dimensions['impact']}  ")
     lines.append("")
 
 
@@ -1171,52 +1298,6 @@ def _paper_cn_reading(title: str, summary: str) -> str:
     elif contains_any(blob, ("retrieval", "rag", "knowledge")):
         topic = "检索增强(RAG)"
 
-    # 从摘要中提取具体方法/对象的关键短语
-    specifics = ""
-    for phrase in [
-        r"([A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+)",  # 5个英文词
-        r"([A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+ [A-Z][a-z]+)",               # 4个英文词
-    ]:
-        import re as _re
-        m = _re.search(phrase, summary)
-        if m:
-            specifics = m.group(1)
-            break
-    if not specifics:
-        # 取第一个长句前60字符
-        sentences = summary.replace('\n', ' ').split('.')
-        for sent in sentences:
-            if len(sent.strip()) > 30:
-                specifics = sent.strip()[:80]
-                break
-
-    # 提炼核心方法
-    method = ""
-    if contains_any(s, ("propos", "introduc", "present", "develop", "novel")):
-        if contains_any(s, ("framework", "system", "architecture")):
-            method = "提出新框架/系统架构"
-        elif contains_any(s, ("method", "approach", "algorithm")):
-            method = "提出新方法/算法"
-        elif contains_any(s, ("model", "network", "architecture")):
-            method = "提出新模型架构"
-        else:
-            method = "提出新方案"
-    elif contains_any(s, ("analyze", "analysis", "study", "investigate", "understand")):
-        method = "分析研究"
-    elif contains_any(s, ("improve", "enhance", "optimize", "reduce", "accelerate")):
-        method = "优化改进"
-    elif contains_any(s, ("survey", "review", "overview", "taxonomy")):
-        method = "综述调研"
-    else:
-        # 更具体的fallback
-        if contains_any(s, ("efficient", "efficiency", "cost")):
-            method = "效率优化"
-        elif contains_any(s, ("scalab", "scale", "distribut")):
-            method = "可扩展方案"
-        elif contains_any(s, ("bottleneck", "limit", "challenge")):
-            method = "突破瓶颈"
-        else:
-            method = "技术研究"
 
     # 提炼目标问题
     goal = ""
@@ -1233,10 +1314,35 @@ def _paper_cn_reading(title: str, summary: str) -> str:
     else:
         goal = "探索新方向"
 
-    # 组装输出
-    if specifics:
-        return f"{topic}领域，{method}以{goal}。核心思路：{specifics}……"
-    return f"{topic}领域，{method}以{goal}。标题「{t}」"
+    # 用中文概括“研究对象—技术路径—目标”，不直接复制英文摘要句子。
+    if contains_any(blob, ("proactive agent", "proactive agents", "real-world task", "real world task")):
+        subject = "真实环境中的主动智能体"
+        approach = "提出统一的评测框架，在真实场景中比较智能体的规划、行动与反馈能力"
+    elif contains_any(blob, ("structure-property", "structure property", "native structure")):
+        subject = "材料与化学体系的结构—性质关系"
+        approach = "结合分子或材料的原生结构信息建立预测模型，并用跨学科数据验证结果"
+    elif contains_any(blob, ("video generation", "video reasoning", "video")):
+        subject = "视频生成中的推理与规划"
+        approach = "把多步推理过程与视频生成过程结合起来，评估模型从计划到生成的连续能力"
+    elif contains_any(blob, ("limited memory", "externalize factual knowledge", "continuous-query")):
+        subject = "有限记忆语言模型的知识存储"
+        approach = "将事实知识从模型内部记忆转移到外部可查询结构，减少长期记忆和推理过程的负担"
+    elif contains_any(blob, ("scientific lineage", "lineage reasoning", "idea generation")):
+        subject = "科学思想谱系与研究创意生成"
+        approach = "追踪已有研究之间的继承关系，再用谱系信息辅助发现和生成新的研究想法"
+    elif contains_any(blob, ("benchmark", "evaluation", "dataset")):
+        subject = topic
+        approach = "建立统一评测基准或数据集，对不同方法在目标任务上的表现进行可重复比较"
+    elif contains_any(blob, ("framework", "architecture", "system")):
+        subject = topic
+        approach = "构建新的框架、系统或模型架构，并通过实验验证其在目标任务上的效果"
+    elif contains_any(blob, ("retrieval", "rag", "knowledge")):
+        subject = topic
+        approach = "引入外部知识检索并与模型推理结合，减少仅依赖参数记忆带来的错误"
+    else:
+        subject = topic
+        approach = "围绕目标任务设计方法并通过实验分析其效果、成本与适用边界"
+    return f"研究对象是{subject}；核心思路：{approach}；目标是{goal}。"
 
 
 def section_for_item(item: dict) -> str:
@@ -1334,7 +1440,8 @@ def social_news_insight(item: dict) -> str:
 
 
 def social_insight(source: str, item: dict, idx: int) -> str:
-    return social_news_insight(item)
+    title = clean(item.get("title"), 28)
+    return f"{social_news_insight(item)} 本条主题为：{title}。"
 
 
 def add_social(lines: list[str], source: str, label: str, count: int,
@@ -1367,7 +1474,10 @@ def build_briefing() -> tuple[str, str]:
     now = datetime.now(CST)
     today = now.strftime("%Y-%m-%d")
     weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
-    output_path = os.path.join(OUTPUT_DIR, f"news-{today}.md")
+    output_path = os.environ.get(
+        "BRIEFING_OUTPUT_PATH",
+        os.path.join(OUTPUT_DIR, f"news-{today}.md"),
+    )
     cache = load_cache()
 
     all_sources = [
@@ -1387,15 +1497,8 @@ def build_briefing() -> tuple[str, str]:
     lines.append(f"**数据来源**：头条/微博/知乎/百度/抖音/IT之家/GitHub/HN/arXiv ｜ 采集时间：{now.strftime('%Y-%m-%d %H:%M')}")
     lines.append("")
 
-    main_items = unique(
-        search_titles(["潜射", "战略导弹", "防汛", "洪水", "台风", "A股", "苹果折叠屏", "DeepSeek", "世界杯", "GLM"], 30),
-        5,
-    )
-    if len(main_items) < 5:
-        main_items.extend(query_categories(["社会", "军事", "财经", "AI", "体育"], 10))
-        main_items = unique(main_items, 5)
+    main_items = select_main_items(5)
 
-    # 全局已用 key 集合 — 防止同一条新闻出现在多个 section 中
     used_keys: set[str] = set()
 
     # ─── 今日要点概览（今日热点 + 推荐 AI + 推荐 GitHub）───
@@ -1529,21 +1632,13 @@ def build_briefing() -> tuple[str, str]:
         used_keys.add(item_key(item))
         add_news_block(lines, item, section_for_item(item), ranks, "🔴" if idx <= 3 else "🟠")
 
-    sections = [
-        ("🌍 **时政·外交**", "时政·外交", query_categories(["时政", "军事", "国际"], 8)),
-        ("💰 **财经·商业**", "财经·商业", query_categories(["财经"], 8) + query_source("wallstreetcn", 4)),
-        ("🔬 **科技·数码**", "科技·数码", query_categories(["科技", "AI"], 8) + query_source("ithome", 4)),
-        ("🚗 **汽车·能源**", "汽车·能源", query_categories(["汽车·能源"], 6) + search_titles(["汽车", "新能源", "电池", "油价", "充电"], 6)),
-        ("🎬 **娱乐·综艺**", "娱乐·综艺", query_categories(["娱乐"], 6) + query_source("bilibili_pop", 4)),
-        ("⚽ **体育·赛事**", "体育·赛事", query_categories(["体育"], 8) + query_source("dongqiudi", 4)),
-        ("🌞 **社会·民生**", "社会·民生", query_categories(["社会", "教育", "健康", "综合"], 12)),
-    ]
+    sections = domestic_sections()
     lines.append("🏮 **国内热点**")
     lines.append("")
     for title, section_key, items in sections:
         lines.append(title)
         lines.append("")
-        limit = 3 if section_key in ("汽车·能源", "娱乐·综艺") else 4
+        limit = 3 if section_key in ("汽车·能源", "娱乐·综艺", "体育·赛事") else 5
         selected = unique(items, limit, used_keys=used_keys)
         if not selected:
             lines.append("🟠 [今日暂无相关热点](链接未获取)")
@@ -1705,18 +1800,50 @@ def build_briefing() -> tuple[str, str]:
         lines.append(f"• 🟢 机会：[{opp_repo}]({opp_url})")
         lines.append(f"> 影响：{opp_desc or '该项目进入 GitHub 趋势榜，开发者在快速验证相关方向。'}  ")
     else:
-        lines.append("• 🟢 机会：[usestrix/strix](https://github.com/usestrix/strix)")
-        lines.append("> 影响：AI 安全测试工具继续升温，说明企业级 AI 应用的安全需求在变强。  ")
+        # 从数据库补查一个有描述的 GitHub 项目
+        fallback_gh = query_source("github", 50)
+        fallback_item = next((it for it in fallback_gh if item_key(it) not in used_keys), None)
+        if fallback_item:
+            fb_repo = repo_name(fallback_item)
+            fb_url = clean(fallback_item.get("url")) or f"https://github.com/{fb_repo}"
+            used_keys.add(item_key(fallback_item))
+            lines.append(f"• 🟢 机会：[{fb_repo}]({fb_url})")
+            lines.append("> 影响：项目进入 GitHub 趋势榜，开发者在快速验证相关方向，建议关注后续 commits。  ")
+        else:
+            lines.append("• 🟢 机会：[待核验](链接未获取)")
+            lines.append("> 影响：当前无未展示的 GitHub 机会条目，等待下一轮采集补充。  ")
     lines.append("> 关注：开源项目成熟度、企业版计划、真实漏洞覆盖范围和审计报告。")
     lines.append("")
 
     lines.append("🧩 **数据缺口**")
     lines.append("")
-    lines.append("- **HN 评论补齐**：本轮 HN Algolia 请求出现 SSL EOF，正文已对 Comments 缺口做标注。")
-    lines.append("- **GitHub API**：部分仓库 language/Stars 因 SSL EOF 未补齐，已保留 Stars未获取/语言未获取。")
-    lines.append("- **OpenAI Blog**：本轮核心采集中 1 个源失败，采集统计显示 OpenAI Blog RSS 无数据。")
-    lines.append("- **微博热度**：微博 heat 多为排名或平台内部数值，不等同真实阅读量。")
-    lines.append("- **百度热度**：部分条目 extra 中含摘要，热度字段需要与标题页二次核对。")
+    # 动态生成数据缺口列表
+    gap_items = []
+
+    # 检查 HN 数据
+    if hn_items:
+        has_missing_comments = any(
+            not parse_extra(it).get("comments") for it in hn_items
+        )
+        if has_missing_comments:
+            gap_items.append("- **HN 评论补齐**：部分 HN 条目 Comments 数据未获取，正文已对缺口做标注。")
+
+    # 检查 GitHub 数据
+    gh_rows = query_source("github", 2)
+    cache_has_data = bool(cache.get("github_language"))
+    if not gh_rows and cache_has_data:
+        gap_items.append("- **GitHub 趋势数据**：当前采集窗口内无 GitHub 趋势数据，可能需要检查 token 有效性。")
+
+    # 检查 OpenAI Blog 等依赖源
+    for src_name in ("openai_blog", "lobsters", "producthunt"):
+        rows = query_source(src_name, 1)
+        if not rows:
+            gap_items.append(f"- **{src_name}**：本轮采集未获取到数据，可能 RSS 不可达或超时。")
+
+    gap_items.append("- **微博热度**：微博 heat 多为排名或平台内部数值，不等同真实阅读量。")
+    if not gap_items:
+        gap_items.append("- 本轮关键数据源均已正常采集，无显著缺口。")
+    lines.extend(gap_items)
 
     content = "\n".join(lines)
     os.makedirs(OUTPUT_DIR, exist_ok=True)

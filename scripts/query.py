@@ -14,7 +14,7 @@ for stream in (sys.stdout, sys.stderr):
         pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from store import query, get_stats
+from store import query, get_stats  # noqa: E402
 
 
 def fmt_time(ts):

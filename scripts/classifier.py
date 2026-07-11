@@ -146,11 +146,19 @@ def classify(title: str, source: str = "", heat: str = "") -> str:
         return "综合"
     title_lower = title.lower()
 
-    # 同一权重组内, 匹配到即返回
-    for cat, weight, keywords in CATEGORY_RULES:
-        for kw in keywords:
-            if kw.lower() in title_lower:
-                return cat
+    # 累计命中分数，而不是按规则列表的第一个关键词返回。
+    # 这样可避免“财报”抢先覆盖“特斯拉/自动驾驶”等更明确的汽车主题。
+    scored: list[tuple[int, int, str]] = []
+    for priority, (cat, weight, keywords) in enumerate(CATEGORY_RULES):
+        matches = {kw for kw in keywords if kw.lower() in title_lower}
+        if matches:
+            score = weight + max(0, len(matches) - 1) * 5
+            # Longer phrases/entities are more specific than short generic tokens
+            # such as "AI" or "world", so they get a small tie-breaking bonus.
+            score += sum(min(len(kw), 8) for kw in matches)
+            scored.append((score, -priority, cat))
+    if scored:
+        return max(scored)[2]
 
     # 特殊源映射
     source_cats = {
@@ -196,13 +204,13 @@ def extract_tags(title: str) -> list[str]:
     return tags[:5]
 
 
-def classify_batch(items: list[dict]) -> list[dict]:
+def classify_batch(items: list[dict], source: str = "") -> list[dict]:
     """批量分类, 在items中添加 category 和 tags"""
     for item in items:
         title = item.get("title", "")
-        source = item.get("source", item.get("extra", {}).get("source", ""))
+        item_source = item.get("source") or source
         if not item.get("category"):
-            item["category"] = classify(title, source)
+            item["category"] = classify(title, item_source)
         if not item.get("tags"):
             item["tags"] = extract_tags(title)
     return items

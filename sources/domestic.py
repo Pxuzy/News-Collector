@@ -7,6 +7,13 @@ from typing import Optional
 from core import fetch, fetch_json, fetch_via_requests, clean_html_text, parse_html, HAS_BS4, DEFAULT_UA
 from sources import register
 
+
+def _weibo_cookie() -> str:
+    """Return the explicitly configured Weibo cookie; never embed credentials."""
+    import os
+
+    return os.environ.get("WEIBO_COOKIE", "").strip()
+
 # ─── 百度热搜 ─────────────────────────
 @register("baidu", "🔎百度热搜")
 def source_baidu() -> tuple[Optional[list[dict]], Optional[str]]:
@@ -45,9 +52,13 @@ def source_zhihu() -> tuple[Optional[list[dict]], Optional[str]]:
         title = target.get('title_area', {}).get('text', '')
         url = target.get('link', {}).get('url', '')
         heat = target.get('metrics_area', {}).get('text', '')
+        excerpt = target.get('excerpt_area', {}).get('text', '')
         if title:
+            extra = {"source": "💬知乎"}
+            if excerpt:
+                extra["desc"] = excerpt[:120]
             items.append({"id": url or title, "title": title, "url": url,
-                          "heat": heat, "extra": {"source": "💬知乎"}})
+                          "heat": heat, "extra": extra})
     return items, None
 
 # ─── 今日头条 ─────────────────────────
@@ -70,10 +81,8 @@ def source_toutiao() -> tuple[Optional[list[dict]], Optional[str]]:
 @register("weibo", "💬微博热搜")
 def source_weibo() -> tuple[Optional[list[dict]], Optional[str]]:
     # 三级降级: Cookie直连 → 微博API → newsnow
-    import os as _os
-    
     # Tier 1: 有Cookie则直接请求
-    weibo_cookie = _os.environ.get("WEIBO_COOKIE") or "SUB=_2AkMWIuNSf8NxqwJRmP8dy2rhaoV2ygrEieKgfhKJJRMxHRl-yT9jqk86tRB6PaLNvQZR6zYUcYVT1zSjoSreQHidcUq7"
+    weibo_cookie = _weibo_cookie()
     if weibo_cookie:
         url = "https://s.weibo.com/top/summary?cate=realtimehot"
         html = fetch_via_requests(url, headers={

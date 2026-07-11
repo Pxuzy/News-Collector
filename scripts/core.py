@@ -7,6 +7,7 @@ import json
 import re
 import time
 import os
+import calendar
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from urllib.request import Request, urlopen
@@ -46,6 +47,15 @@ SOURCE_INTERVALS: dict[str, int] = {
 def get_interval(source: str) -> int:
     """获取源的推荐采集间隔"""
     return SOURCE_INTERVALS.get(source, 300)
+
+
+def parse_parallel(value: str, default: int = 8, minimum: int = 1, maximum: int = 32) -> int:
+    """Parse and clamp collector concurrency from CLI/env input."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(parsed, maximum))
 
 
 # ─── 统一 Fetch 层 ──
@@ -98,18 +108,30 @@ def fetch_json(url: str, headers: Optional[dict] = None, timeout: int = 12) -> O
 
 
 def fetch_via_requests(url: str, headers: Optional[dict] = None, timeout: int = 12) -> str:
-    """requests版请求 (功能更强, 处理Cookie/重定向更好)"""
+    """requests版请求，临时网络错误使用有限指数退避。"""
     if not HAS_REQUESTS:
         return fetch(url, headers, timeout)
     if headers is None:
         headers = {"User-Agent": DEFAULT_UA}
-    try:
-        r = req_lib.get(url, headers=headers, timeout=timeout,
-                        proxies=PROXY_CONFIG, allow_redirects=True)
-        r.raise_for_status()
-        return r.text
-    except Exception as e:
-        return f'ERROR: {e}'
+    retry_statuses = {408, 425, 429, 500, 502, 503, 504}
+    for attempt in range(3):
+        try:
+            r = req_lib.get(url, headers=headers, timeout=timeout,
+                            proxies=PROXY_CONFIG, allow_redirects=True)
+            if r.status_code in retry_statuses and attempt < 2:
+                time.sleep(1.5 * (2 ** attempt))
+                continue
+            r.raise_for_status()
+            return r.text
+        except Exception as e:
+            status = getattr(locals().get("r"), "status_code", None)
+            retryable_exception = status is None or status in retry_statuses
+            if attempt < 2 and retryable_exception:
+                time.sleep(1.5 * (2 ** attempt))
+                continue
+            detail = f"HTTP {status}: {e}" if status else str(e)
+            return f'ERROR: {detail}'
+    return "ERROR: request retries exhausted"
 
 
 # ─── RSS 解析器 ──
@@ -128,12 +150,19 @@ def rss_to_items(url: str, source_name: str, icon: str, limit: int = 10,
     for e in feed.entries[:limit]:
         title, link = e.get('title', ''), e.get('link', '')
         pub = e.get('published_parsed')
-        if pub and datetime.fromtimestamp(__import__('time').mktime(pub), tz=timezone.utc) < now - timedelta(hours=hours):
+        if pub and datetime.fromtimestamp(calendar.timegm(pub), tz=timezone.utc) < now - timedelta(hours=hours):
             continue
         if title:
+            desc = e.get('summary', '') or e.get('description', '') or ''
+            # 只保留纯文本前120字符
+            desc_clean = clean_html_text(desc)[:120] if desc else ''
+            extra = {"source": f"{icon}{source_name}"}
+            if desc_clean:
+                extra["desc"] = desc_clean
             items.append({"id": link or title, "title": title, "url": link or '',
-                          "heat": '', "extra": {"source": f"{icon}{source_name}"}})
-    return (items[:limit], None) if items else (None, "RSS无数据")
+                          "heat": '', "extra": extra})
+    # 请求成功但过滤后没有近期条目：这是正常空结果，不是采集失败。
+    return (items[:limit], None) if items else ([], None)
 
 
 # ─── HTML 清理工具 ──

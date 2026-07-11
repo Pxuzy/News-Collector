@@ -95,10 +95,23 @@ def main():
     step("③ 生成简报")
     today = datetime.date.today().strftime('%Y-%m-%d')
     output_path = os.path.join(ROOT, 'output', f'news-{today}.md')
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    temp_output_path = os.path.join(
+        ROOT, 'output', f'.news-{today}-{os.getpid()}.md.tmp'
+    )
+    if os.path.exists(temp_output_path):
+        os.unlink(temp_output_path)
     
     gen = os.path.join(ROOT, 'scripts', 'gen_today_v23_briefing.py')
     if os.path.exists(gen):
-        if not run([sys.executable, gen], timeout=60):
+        old_output_path = os.environ.get('BRIEFING_OUTPUT_PATH')
+        os.environ['BRIEFING_OUTPUT_PATH'] = temp_output_path
+        generated = run([sys.executable, gen], timeout=60)
+        if old_output_path is None:
+            os.environ.pop('BRIEFING_OUTPUT_PATH', None)
+        else:
+            os.environ['BRIEFING_OUTPUT_PATH'] = old_output_path
+        if not generated:
             success = False
     else:
         success = False
@@ -107,16 +120,30 @@ def main():
 
     # 4. 校验
     step("④ 校验简报")
-    if os.path.exists(output_path):
+    if os.path.exists(temp_output_path):
         validator = os.path.join(ROOT, 'scripts', 'validate_briefing.py')
-        if not run([sys.executable, validator, output_path], timeout=10):
+        if not run([sys.executable, validator, temp_output_path], timeout=10):
             success = False
-        print(f"\n  ✅ 简报文件: {output_path}")
+        quality = os.path.join(ROOT, 'scripts', 'check_briefing_quality.py')
+        if not run([sys.executable, quality, temp_output_path], timeout=30):
+            success = False
+        if not run([sys.executable, quality, temp_output_path, '--strict'], timeout=30):
+            success = False
+        if success:
+            os.replace(temp_output_path, output_path)
+            print(f"\n  ✅ 简报文件: {output_path}")
+        else:
+            print("\n  ❌ 校验未全部通过，临时简报不会发布")
     else:
         success = False
         print(f"  ⚠️ 简报文件未生成: {output_path}")
 
     step("✅ 全流程完成")
+    if os.path.exists(temp_output_path):
+        try:
+            os.unlink(temp_output_path)
+        except OSError:
+            pass
     return 0 if success else 1
 
 if __name__ == '__main__':

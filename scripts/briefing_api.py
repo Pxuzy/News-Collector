@@ -29,12 +29,9 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 for path in (SCRIPT_DIR, PROJECT_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
-from store import batch_query, query_by_categories, get_stats, heat_to_score, normalize_heat, _db
-from sources import get_source_cn, get_group_sources, all_group_names
-from classifier import (
-    BRIEFING_CATEGORIES, CATEGORY_MAP,
-    map_to_briefing_category
-)
+from store import batch_query, query_by_categories, get_stats, heat_to_score, normalize_heat, _db  # noqa: E402
+from sources import get_source_cn, get_group_sources, all_group_names  # noqa: E402
+from classifier import BRIEFING_CATEGORIES, CATEGORY_MAP, map_to_briefing_category  # noqa: E402
 
 CST = timezone(timedelta(hours=8))
 TOOLKIT = PROJECT_DIR
@@ -183,7 +180,7 @@ def get_overview(days: int = 1) -> dict:
     for g in all_group_names():
         sources = get_group_sources(g)
         src_set = set(sources)
-        count = sum(1 for s in stats.get("by_source", []) if s["source"] in src_set)
+        count = sum(s["count"] for s in stats.get("by_source", []) if s["source"] in src_set)
         group_counts[g] = count
 
     # 按分类统计
@@ -223,8 +220,10 @@ def cli():
     parser.add_argument("--status", action="store_true", help="数据概览")
     parser.add_argument("--groups", type=str, help="分组名(逗号分隔), 如 domestic,intl,ai")
     parser.add_argument("--sections", action="store_true", help="按简报7板块输出")
-    parser.add_argument("--days", type=int, default=1, help="最近N天 (默认1)")
-    parser.add_argument("--limit", type=int, default=15, help="每组/板块返回条数 (默认15)")
+    parser.add_argument("--days", type=int, default=1, choices=range(0, 366),
+                        help="最近N天 (默认1，范围0-365)")
+    parser.add_argument("--limit", type=int, default=15, choices=range(1, 201),
+                        help="每组/板块返回条数 (默认15，范围1-200)")
     parser.add_argument("--json", action="store_true", help="JSON格式输出")
     args = parser.parse_args()
 

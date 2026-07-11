@@ -84,7 +84,8 @@ services:
       - -c
       - python -c "from store import init_db; init_db()" && python scripts/api.py
     ports:
-      - "8899:8899"
+      # API is consumed by Hermes on this host only; do not expose it publicly.
+      - "127.0.0.1:8899:8899"
     healthcheck:
       test:
         - CMD

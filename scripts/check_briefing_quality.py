@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 
 
@@ -82,8 +83,12 @@ def gather_news_blocks(text: str) -> list[dict]:
     lines = text.split("\n")
     blocks: list[dict] = []
     current = None
+    current_section = "未分栏"
 
     for i, line in enumerate(lines):
+        section_match = re.match(r"^([^\s])\s*\*\*([^*]+)\*\*", line)
+        if section_match and "http" not in line:
+            current_section = section_match.group(2).strip()
         # 检测新闻标题行（带颜色圆点或 📄/• 开头的条目）
         title_match = re.match(
             r'^([🔴🟠🟢🔵🟣📄]|•\s)', line
@@ -92,6 +97,7 @@ def gather_news_blocks(text: str) -> list[dict]:
             if current:
                 blocks.append(current)
             current = {
+                "section": current_section,
                 "title_line": line,
                 "line_num": i + 1,
                 "quote_lines": [],
@@ -163,7 +169,34 @@ def check_block(block: dict) -> dict:
     return result
 
 
-def check_file(filepath: str) -> dict:
+def normalize_template(value: str) -> str:
+    """去掉标题、链接、数字和排名，只保留可用于识别模板的正文骨架。"""
+    value = re.sub(r"https?://[^)\s]+", "", value)
+    value = re.sub(r"[“‘《【].*?[”’》】]", "〈标题〉", value)
+    value = re.sub(r"\d+(?:\.\d+)?(?:万|亿|%|条|分)?", "〈数值〉", value)
+    value = re.sub(r"(?:来源|热度|排名|平台)[^，。；：]*[：:]", "", value)
+    value = re.sub(r"\s+", "", value)
+    return value.strip("，。；：、")
+
+
+def find_template_repeats(section_fields: dict[str, dict[str, list[str]]]) -> tuple[int, dict]:
+    """按板块/字段找归一化后的模板重复，返回重复数量和示例。"""
+    groups: dict[str, dict[str, dict[str, int]]] = {}
+    repeated_count = 0
+    for section, fields in section_fields.items():
+        for field, values in fields.items():
+            if field == "✅ 可信度":
+                continue
+            normalized = Counter(normalize_template(value) for value in values)
+            repeated = {text: count for text, count in normalized.items()
+                        if text and count >= 2}
+            if repeated:
+                groups.setdefault(section, {})[field] = repeated
+                repeated_count += sum(count - 1 for count in repeated.values())
+    return repeated_count, groups
+
+
+def check_file(filepath: str, strict: bool = False) -> dict:
     """对整份简报执行质量检查，返回结构化报告。"""
     text = Path(filepath).read_text(encoding="utf-8")
     blocks = gather_news_blocks(text)
@@ -199,6 +232,34 @@ def check_file(filepath: str) -> dict:
         else:
             clean_count += 1
 
+    # 严格重复检查：按板块和字段统计完全相同的正文，避免“评分高但每条都说一样”。
+    field_pattern = re.compile(r"^>\s*(?:📌 事件|📌 做了什么|✨ 创新|🌊 影响|🌊 意义|👀 后续|👀 后续影响|💡 解读|✅ 可信度)：(.+?)\s*$")
+    section_fields: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    english_residue: list[str] = []
+    for block in blocks:
+        section = block.get("section", "未分栏")
+        for line in block.get("quote_lines", []):
+            match = field_pattern.match(line)
+            if match:
+                field = line.split("：", 1)[0].lstrip("> ")
+                value = match.group(1).strip()
+                section_fields[section][field].append(value)
+            visible = re.sub(r"https?://[^)\s]+", "", line)
+            visible = re.sub(r"[A-Za-z]{3,}", "", visible)
+            if re.search(r"[A-Za-z]{3,}", visible):
+                english_residue.append(f"第{block['line_num']}行：{line[:100]}")
+
+    duplicate_groups: dict[str, dict[str, object]] = {}
+    duplicate_count = 0
+    for section, fields in section_fields.items():
+        for field, values in fields.items():
+            repeated = {text: count for text, count in Counter(values).items() if count >= 2}
+            if repeated:
+                duplicate_groups.setdefault(section, {})[field] = repeated
+                duplicate_count += sum(count - 1 for count in repeated.values())
+
+    template_repeat_count, template_repeat_groups = find_template_repeats(section_fields)
+
     # 计算占比
     def ratio(n):
         return round(n / total * 100, 1) if total else 0
@@ -224,6 +285,16 @@ def check_file(filepath: str) -> dict:
             "light_template_count": light_count,
             "clean_count": clean_count,
         },
+        "strict_repetition": {
+            "duplicate_field_values": duplicate_count,
+            "groups": duplicate_groups,
+            "normalized_template_repeats": template_repeat_count,
+            "template_groups": template_repeat_groups,
+        },
+        "english_residue": {
+            "count": len(english_residue),
+            "examples": english_residue[:20],
+        },
         "flagged_items": [
             r["title"] for r in results if r["template_level"] == "heavy"
         ],
@@ -244,7 +315,7 @@ def check_file(filepath: str) -> dict:
 def print_report(report: dict) -> None:
     """友好打印质量报告。"""
     print(f"\n{'='*55}")
-    print(f"  📊 简报质量检查报告")
+    print("  📊 简报质量检查报告")
     print(f"  {'='*55}")
     print(f"  文件: {report['file']}")
     print(f"  新闻条目总数: {report['total_news_items']}")
@@ -261,17 +332,21 @@ def print_report(report: dict) -> None:
     print(f"  等级: {grade}")
     print()
 
-    print(f"  📈 模板统计:")
+    print("  📈 模板统计:")
     ts = report["template_stats"]
     print(f"    · fallback_event (事件描述模板):    {ts['fallback_event_count']:>3}/{report['total_news_items']:>3} ({ts['fallback_event_ratio']}%)")
     print(f"    · generic_impact (影响描述模板):     {ts['generic_impact_ratio']}%")
     print(f"    · generic_followup (后续描述模板):   {ts['generic_followup_ratio']}%")
     print(f"    · generic_insight (解读模板):        {ts['generic_insight_ratio']}%")
     print(f"    · fixed_credibility (固定可信度):     {ts['fixed_credibility_ratio']}%")
+    strict = report["strict_repetition"]
+    print(f"    · 板块内重复字段值:                   {strict['duplicate_field_values']} 条")
+    print(f"    · 归一化模板重复:                     {strict['normalized_template_repeats']} 条")
+    print(f"    · 可见英文残留:                       {report['english_residue']['count']} 行")
     print()
 
     tl = report["template_levels"]
-    print(f"  🏷️  条目质量分布:")
+    print("  🏷️  条目质量分布:")
     print(f"    · 重度模板 (≥4项): {tl['heavy_template_count']} ({tl['heavy_template_ratio']}%)")
     print(f"    · 中度模板 (2-3项): {tl['medium_template_count']}")
     print(f"    · 轻度模板 (1项):   {tl['light_template_count']}")
@@ -279,7 +354,7 @@ def print_report(report: dict) -> None:
     print()
 
     if report["flagged_items"]:
-        print(f"  🚩 重度模板条目 (建议优先改进):")
+        print("  🚩 重度模板条目 (建议优先改进):")
         for title in report["flagged_items"][:10]:
             print(f"    · {title[:55]}...")
         print()
@@ -298,16 +373,26 @@ def print_report(report: dict) -> None:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("用法: python scripts/check_briefing_quality.py <简报.md>")
+        print("用法: python scripts/check_briefing_quality.py <简报.md> [--strict]")
         return 1
 
+    strict = "--strict" in sys.argv[2:]
     filepath = sys.argv[1]
     if not Path(filepath).exists():
         print(f"文件不存在: {filepath}")
         return 1
 
-    report = check_file(filepath)
+    report = check_file(filepath, strict=strict)
     print_report(report)
+    if strict:
+        repetition = report["strict_repetition"]
+        if repetition["duplicate_field_values"] or repetition["normalized_template_repeats"]:
+            print("  ❌ 严格模板门禁: FAIL（发现板块内重复字段或归一化模板）")
+            return 1
+        if report["english_residue"]["count"]:
+            print("  ❌ 严格中文门禁: FAIL（发现可见英文残留）")
+            return 1
+        print("  ✅ 严格模板门禁: PASS")
     return 0 if report["quality_score"] >= 50 else 1
 
 
