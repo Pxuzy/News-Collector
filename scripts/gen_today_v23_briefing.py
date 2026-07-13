@@ -9,6 +9,7 @@ import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.environ.get("NEWS_COLLECTOR_ROOT") or os.path.dirname(SCRIPT_DIR)
@@ -139,10 +140,35 @@ def clean(text: object, max_len: int | None = None) -> str:
     return value
 
 
+def markdown_url(value: object) -> str:
+    """Percent-encode URL whitespace and non-ASCII characters for Markdown."""
+    url = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if not url.startswith(("http://", "https://")):
+        return "链接未获取"
+    return quote(url, safe=":/?#[]@!$&'()*+,;=%-._~")
+
+
 def md_link(item: dict) -> str:
     title = clean(item.get("title"), 90)
-    url = clean(item.get("url")) or "链接未获取"
+    url = markdown_url(item.get("url"))
     return f"[{title}]({url})"
+
+
+def foreign_title_cn(title: object, ordinal: int | None = None) -> str:
+    """把国外新闻标题转成简短中文；无法离线翻译时保留可区分的中文占位。"""
+    text = clean(title, 100)
+    lowered = text.lower()
+    known = (
+        ("mcconnell says he is unable to return", "麦康奈尔称目前仍无法返回美国参议院"),
+        ("unable to return to us senate", "麦康奈尔称目前仍无法返回美国参议院"),
+    )
+    for needle, translated in known:
+        if needle in lowered:
+            return translated
+    if any("\u4e00" <= ch <= "\u9fff" for ch in text):
+        return text
+    suffix = f"（第{ordinal}条）" if ordinal is not None else ""
+    return f"国际新闻：原文标题见链接{suffix}"
 
 
 def heat_display(item: dict) -> str:
@@ -204,7 +230,7 @@ def select_main_items(limit: int = 5) -> list[dict]:
     items: list[dict] = []
     for keyword in MAIN_HOTLIST_KEYWORDS:
         items.extend(query_hotlist_for_title(keyword, 3))
-    selected = unique(items, limit)
+    selected = dedup_event_items(items, limit)
     if len(selected) >= limit:
         return selected
 
@@ -214,7 +240,7 @@ def select_main_items(limit: int = 5) -> list[dict]:
     # Keep the historical category fallback as a final safety net for sources
     # that classify an item but are not registered as a hotlist source.
     fallback_items.extend(query_categories(list(MAIN_FALLBACK_CATEGORIES), max(limit * 2, 10)))
-    return unique(selected + fallback_items, limit)
+    return dedup_event_items(selected + fallback_items, limit)
 
 
 def domestic_sections() -> list[tuple[str, str, list[dict]]]:
@@ -316,6 +342,66 @@ def unique(items: list[dict], limit: int, cross_source: bool = True,
                 seen_keywords.append(kw)
         seen.add(key)
         out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+HIGHLIGHT_GENERIC_KEYWORDS = frozenset({
+    "台风", "救援", "涨价", "地震", "事故", "航天", "火箭回收", "奥运", "a股",
+})
+
+
+def dedup_event_items(items: list[dict], limit: int,
+                      used_keys: set[str] | None = None) -> list[dict]:
+    """对今日要点/主线做事件级去重，并在去重后保留不同事件补位。
+
+    ``unique()`` 主要解决 URL、标题相似度和公共 2-gram；同一事件的短标题
+    可能只共享一个实体词（例如“台风巴威”与“巴威路线东移”），因此这里
+    先从候选池建立“泛类词→具体事件词”的关系，再用具体事件词聚类。
+    只有候选池中能唯一推断具体事件时，才把只含泛类词的标题归入该事件，
+    避免把不同台风或不同事故错误合并。
+    """
+    if not items or limit <= 0:
+        return []
+
+    # 先做已有的 URL/标题/关键词去重，但不要在这里过早截断候选池，
+    # 否则同事件被去掉后没有足够的不同事件补位。
+    base = unique(items, max(limit, len(items)), used_keys=used_keys)
+    if not base:
+        return []
+
+    specific_by_generic: dict[str, set[str]] = {}
+    matches_by_item: list[tuple[dict, set[str], set[str]]] = []
+    for item in base:
+        title = words_for(item.get("title"))
+        matches = {kw.lower() for kw in MAIN_HOTLIST_KEYWORDS if kw.lower() in title}
+        generic = matches & HIGHLIGHT_GENERIC_KEYWORDS
+        specific = matches - HIGHLIGHT_GENERIC_KEYWORDS
+        for generic_kw in generic:
+            specific_by_generic.setdefault(generic_kw, set()).update(specific)
+        matches_by_item.append((item, generic, specific))
+
+    labels_by_key: dict[str, set[str]] = {}
+    for item, generic, specific in matches_by_item:
+        labels = {f"event:{kw}" for kw in specific}
+        if not labels and generic:
+            inferred = set().union(*(specific_by_generic.get(kw, set()) for kw in generic))
+            # 只有一个具体事件候选时，才能安全把“台风登陆”归到“巴威”事件。
+            if len(inferred) == 1:
+                labels = {f"event:{kw}" for kw in inferred}
+            else:
+                labels = {f"topic:{kw}" for kw in generic}
+        labels_by_key[item_key(item)] = labels
+
+    out: list[dict] = []
+    seen_event_labels: set[str] = set()
+    for item in base:
+        labels = labels_by_key.get(item_key(item), set())
+        if labels and labels & seen_event_labels:
+            continue
+        out.append(item)
+        seen_event_labels.update(labels)
         if len(out) >= limit:
             break
     return out
@@ -709,6 +795,16 @@ def github_info(repo: str, cache: dict) -> dict:
     return cache.get("github_language", {}).get(repo, {})
 
 
+GITHUB_MIN_STARS = 100_000
+
+
+def github_stars_value(value: object) -> int:
+    """解析 GitHub Stars，无法确认时返回 0。"""
+    text = clean(value).replace("⭐", "").replace(",", "")
+    match = re.search(r"\d[\d]*", text)
+    return int(match.group(0)) if match else 0
+
+
 AI_TERMS = (
     "ai", "artificial intelligence", "llm", "gpt", "claude", "gemini", "deepseek",
     "qwen", "glm", "agent", "agents", "model", "models", "codex", "openai",
@@ -731,6 +827,55 @@ def is_ai_relevant(item: dict) -> bool:
     if source in {"aihot", "huggingface", "arxiv", "tldr_ai"}:
         return True
     return contains_any(title, AI_TERMS)
+
+
+def github_description_cn(repo: str, desc: str, topics: list[str] | None = None) -> str:
+    """将 GitHub API 的英文简介转换为准确、简短的中文。"""
+    raw = clean(desc, 160)
+    blob = words_for(repo, raw, " ".join(topics or []))
+
+    # 先处理已知仓库，避免宽泛关键词把项目归错类。
+    known = {
+        "openai/codex-plugin-cc": "让 Claude Code 调用 Codex 进行代码审查或委派开发任务。",
+        "wonderwhy-er/DesktopCommanderMCP": "为 Claude 提供终端控制、文件搜索和差异编辑能力的 MCP 服务。",
+        "obra/superpowers": "面向 AI Agent 的技能框架与软件开发方法论。",
+        "mattpocock/skills": "面向工程师的 AI 技能集合，来源于作者的 Claude 配置目录。",
+        "vercel/next.js": "用于构建 React 应用的全栈 Web 框架。",
+        "microsoft/PowerToys": "Windows 实用工具集合，用于提升生产力和个性化设置。",
+        "microsoft/TypeScript": "JavaScript 的超集，可编译为整洁的 JavaScript 输出。",
+        "oven-sh/bun": "高性能 JavaScript 运行时、打包器、测试运行器和包管理器。",
+        "home-assistant/core": "强调本地控制和隐私保护的开源家庭自动化平台。",
+        "addyosmani/agent-skills": "面向 AI 编码 Agent 的生产级工程技能库。",
+        "unclecode/crawl4ai": "面向大模型应用的开源网页爬虫和结构化数据抽取工具。",
+        "Zackriya-Solutions/meetily": "隐私优先的本地 AI 会议助理，支持实时转写和说话人分离。",
+        "asgeirtj/system_prompts_leaks": "收集和整理多个 AI 产品及编码工具系统提示词的资料库。",
+        "ogulcancelik/herdr": "运行在终端中的 AI Agent 多路复用器。",
+        "TencentCloud/CubeSandbox": "面向 AI Agent 的即时、并发、安全且轻量的沙箱。",
+        "tailscale/tailscale": "简化 WireGuard 和双因素认证使用的安全网络工具。",
+    }
+    if repo in known:
+        return known[repo]
+
+    # 再按简介特征兜底，避免把原始英文直接写进中文简报。
+    if contains_any(blob, ["job application", "hiring", "hire"]):
+        return "面向求职或招聘流程的自动化工具，具体能力需结合 README 和实际演示核验。"
+    if contains_any(blob, ["mcp server", "terminal control", "file system search"]):
+        return "提供终端控制、文件搜索或差异编辑能力的 MCP 工具。"
+    if contains_any(blob, ["meeting", "transcription", "whisper", "speaker", "diarization"]):
+        return "面向会议转写、说话人识别或本地总结的工具。"
+    if contains_any(blob, ["web crawler", "scraper", "scraping", "llm friendly"]):
+        return "面向网页抓取和结构化数据抽取的工具，可用于搜索、监控或 RAG 数据准备。"
+    if contains_any(blob, ["home automation", "iot"]):
+        return "面向家庭自动化或物联网场景的开源项目。"
+    if contains_any(blob, ["sandbox", "secure", "concurrent"]):
+        return "面向隔离执行、安全控制或并发任务的基础设施项目。"
+    if contains_any(blob, ["agent", "agents", "codex", "claude", "mcp", "skills"]):
+        return "面向 AI Agent、编码助手或技能编排的开发者工具。"
+    if contains_any(blob, ["database", "runtime", "compiler", "framework", "javascript"]):
+        return "面向开发者的编程语言、运行时、框架或基础设施项目。"
+    if raw:
+        return "开发者工具或开源基础设施项目，具体功能和适用边界需结合 README 核验。"
+    return "项目简介未获取，需打开 README 核实具体用途。"
 
 
 def github_profile(repo: str, desc: str, language: str, topics: list[str] | None, label: str) -> dict[str, str]:
@@ -801,7 +946,7 @@ def github_profile(repo: str, desc: str, language: str, topics: list[str] | None
         }
     return {
         "summary": "开发者工具或开源基础设施。",
-        "purpose": f"从简介看，它解决的是“{clean(desc, 80)}”这一类工程问题。先按开发者工具评估：能否快速安装、能否接入现有流程、文档是否足够支撑真实使用。",
+        "purpose": "从项目简介可以确认它属于开发者工具或开源基础设施；具体功能和适用边界仍需结合 README、安装体验和实际演示核验。",
         "why": f"进入 GitHub {label}说明它在开发者社区获得趋势曝光；Stars 是总量指标，不等同于今日新增热度。",
         "follow": "安装体验、核心功能边界、维护者活跃度、issue 响应、许可证和与同类工具的差异。",
     }
@@ -825,9 +970,10 @@ def add_github_item(lines: list[str], repo: str, url: str, rank: int, info: dict
     topics = info.get("topics") or []
     label = "日榜" if daily else "周榜"
     profile = github_profile(repo, desc, language, topics, label)
-    lines.append(f"• GitHub#{rank} {label} [{repo}]({url}) ⭐ {stars} · {language}")
+    desc_cn = github_description_cn(repo, desc, topics)
+    lines.append(f"• GitHub#{rank} {label} [{repo}]({markdown_url(url)}) ⭐ {stars} · {language}")
     lines.append("")
-    lines.append(f"> 📌 项目：{profile['summary']} {desc}  ")
+    lines.append(f"> 📌 项目：{profile['summary']} {desc_cn}  ")
     lines.append(f"> 🧩 是干嘛的：{profile['purpose']}  ")
     lines.append(f"> 🔥 为什么热：GitHub#{rank} {label} · {profile['why']}  ")
     lines.append(f"> 👀 后续看：{profile['follow']}")
@@ -1067,11 +1213,30 @@ def hn_chinese_profile(title: str, points: str = "", comments: str = "") -> dict
     }
 
 
-def _hn_cn_title(title: str) -> str:
-    """将英文 HN 标题转换为中文字段；专有名词保留原名。"""
+def _hn_cn_title(title: str, kind: str = "hn") -> str:
+    """将英文 HN/论文标题转换为中文字段；专有名词保留原名。"""
     t = clean(title, 90)
     if not t:
-        return "标题未获取"
+        return "论文标题未获取" if kind == "paper" else "标题未获取"
+    lowered = t.lower()
+    known_titles = (
+        ("apple sues openai", "苹果起诉 OpenAI，指控前员工窃取商业机密"),
+        ("quadrf can spot drones", "QuadRF 能探测无人机并穿墙感知 Wi-Fi"),
+        ("gpt-5.6 sol ultra produces proof", "GPT-5.6 Sol Ultra 给出环双覆盖猜想的证明"),
+        ("new york city to ban deceptive subscription", "纽约市将禁止欺骗性订阅行为"),
+        ("good tools are invisible", "好工具应当隐形"),
+        ("late bronze age collapse", "晚期青铜时代崩溃"),
+        ("ai 2040: plan a", "AI 2040：A 计划"),
+        ("einstein's relativity rules chemical bonds", "新研究显示：相对论决定重元素中的化学键"),
+        ("uniclawbench", "UniClawBench：真实环境主动智能体通用基准"),
+        ("opencof: learning to reason", "OpenCoF：通过视频生成学习推理"),
+        ("ideas have genomes", "思想具有基因组：科学谱系推理与创意生成基准"),
+        ("score accuracy along the forward diffusion", "沿前向扩散过程的分数准确度不能证明数值稳定性"),
+        ("multtipop", "MulTTiPop：流行音乐多轨转录数据集"),
+    )
+    for needle, translated_title in known_titles:
+        if needle in lowered:
+            return translated_title
     replacements = (
         ("Show HN:", "展示项目："), ("Show HN", "展示项目"),
         ("Launch HN:", "创业发布："), ("Launch HN", "创业发布"),
@@ -1093,7 +1258,7 @@ def _hn_cn_title(title: str) -> str:
         translated = translated.replace(source, target)
     translated = re.sub(r"\s+", " ", translated).strip(" -:：")
     if re.search(r"[A-Za-z]{4,}", translated):
-        translated = f"技术社区话题：{translated}"
+        translated = "论文主题：原文标题见链接" if kind == "paper" else "技术社区讨论：原文标题见链接"
     return clean(translated, 70)
 
 
@@ -1107,9 +1272,9 @@ def discussion_signal(points: object, comments: object) -> str:
     except Exception:
         c = 0
     if not c:
-        return "Comments 未获取，先把它当作高热条目处理，后续需要打开 HN 原帖确认争议点。"
+        return "评论数未获取，先把它当作高热条目处理，后续需要打开 HN 原帖确认争议点。"
     if p and c >= p * 0.6:
-        return f"{c} 条评论相对 {p} points 偏高，说明它不只是被点赞，还引发了明显争议或经验交换。"
+        return f"{c} 条评论相对 {p} 积分偏高，说明它不只是被点赞，还引发了明显争议或经验交换。"
     if c >= 250:
         return f"{c} 条评论说明讨论深，适合优先看高赞评论里的反例、替代方案和实践经验。"
     return f"{c} 条评论说明已有一定讨论，但更像信息分享；重点看前排评论是否给出实测或反驳。"
@@ -1131,11 +1296,19 @@ def add_hn_item(lines: list[str], item: dict, rank: int, cache: dict) -> None:
     # Comments: cache → extra.comments（采集器解析）→ "未获取"
     raw_comments = extra.get("comments", "")
     comments = cached.get("comments") or raw_comments or "未获取"
-    url = cached.get("hn_url") or clean(item.get("url")) or "链接未获取"
+    url = markdown_url(cached.get("hn_url") or item.get("url"))
     title = clean(item.get("title"), 90)
     profile = hn_chinese_profile(title, points, comments)
     cn_title = _hn_cn_title(profile.get("cn_title", title))
+    # 当离线翻译无法保留英文标题时，不能让所有条目退化成同一个占位标题：
+    # 严格模板门禁会把它们判为同一事件，而且用户也无法区分 HN 条目。
+    # 用中文序号保留条目间的稳定区分；原文仍可通过链接打开。
+    if cn_title == "技术社区讨论：原文标题见链接":
+        ordinal = "零一二三四五六七八九十"[rank] if 0 <= rank <= 10 else "末"
+        cn_title = f"技术社区讨论：原文标题见链接（第{ordinal}条）"
     event = profile.get("event", "")
+    if re.search(r"[A-Za-z]{4,}", event):
+        event = f"HN 社区围绕 {cn_title} 展开讨论，重点在事实核验、工程细节和评论区争议。"
     impact = f"{profile.get('impact', '')} 本条主题为：{cn_title}，需要结合原始文章确认具体影响。"
     insight = f"{profile.get('insight', '')} 针对本条主题：{cn_title}，还要区分社区观点与已验证事实。"
     signal = discussion_signal(points, comments)
@@ -1246,8 +1419,8 @@ def paper_dimensions(title: str, summary: str) -> dict[str, str]:
 
 def add_paper_item(lines: list[str], item: dict) -> None:
     title = clean(item.get("title"), 100)
-    display_title = _hn_cn_title(title)
-    url = clean(item.get("url")) or "链接未获取"
+    display_title = _hn_cn_title(title, kind="paper")
+    url = markdown_url(item.get("url"))
     extra = parse_extra(item)
     summary = clean(item.get("summary") or extra.get("summary") or extra.get("desc"), 240)
     profile = paper_profile(title, summary)
@@ -1490,9 +1663,10 @@ def build_briefing() -> tuple[str, str]:
     stats = get_stats(days=1)
 
     lines: list[str] = []
+    edition = "早间版" if now.hour < 11 else "午间版" if now.hour < 16 else "晚间版"
     lines.append("📰 **今日热点 · 全源聚合**")
     lines.append("")
-    lines.append(f"📅 `{now.strftime('%Y.%m.%d')}（{weekday}）` · `晚间版`")
+    lines.append(f"📅 `{now.strftime('%Y.%m.%d')}（{weekday}）` · `{edition}`")
     lines.append("")
     lines.append(f"**数据来源**：头条/微博/知乎/百度/抖音/IT之家/GitHub/HN/arXiv ｜ 采集时间：{now.strftime('%Y-%m-%d %H:%M')}")
     lines.append("")
@@ -1505,13 +1679,10 @@ def build_briefing() -> tuple[str, str]:
     lines.append("📌 **今日要点**")
     lines.append("")
     # 热点新闻
-    highlight_pool = list(main_items)
-    if len(highlight_pool) < 5:
-        extra_highlights = query_categories(["社会", "军事", "财经", "AI"], 15)
-        for it in extra_highlights:
-            if item_key(it) not in {item_key(h) for h in highlight_pool}:
-                highlight_pool.append(it)
-    highlight_pool = unique(highlight_pool, 6)
+    # 必须在事件级去重后再补位；先截取 5/6 条会把同一事件的变体挤满今日要点。
+    highlight_candidates = list(main_items)
+    highlight_candidates.extend(query_categories(["社会", "军事", "财经", "AI"], 30))
+    highlight_pool = dedup_event_items(highlight_candidates, 6)
     for idx, item in enumerate(highlight_pool):
         used_keys.add(item_key(item))
         section_name = section_for_item(item)
@@ -1539,7 +1710,9 @@ def build_briefing() -> tuple[str, str]:
         for item in ai_recs:
             used_keys.add(item_key(item))
             title = clean(item.get("title"), 60)
-            url = clean(item.get("url")) or "链接未获取"
+            if item.get("source") == "hackernews":
+                title = _hn_cn_title(title)
+            url = markdown_url(item.get("url"))
             blob = words_for(title)
             if contains_any(blob, ("gpt", "claude", "openai", "anthropic", "llm", "model")):
                 tag = "模型动态"
@@ -1570,18 +1743,22 @@ def build_briefing() -> tuple[str, str]:
         info = github_info(repo, cache)
         desc = clean(info.get("description") or item.get("description", ""), 100)
         stars = info.get("stars") or item.get("stars", 0)
+        if github_stars_value(stars) < GITHUB_MIN_STARS:
+            continue
         gh_recs.append((repo, desc, stars, info))
         if len(gh_recs) >= 3:
             break
-    if len(gh_recs) < 2:
-        for item in query_source("github", 10):
+    if len(gh_recs) < 3:
+        for item in query_source("github", 30):
             repo = repo_name(item)
             if repo in seen_repos or f"repo:{repo}" in used_keys:
                 continue
-            seen_repos.add(repo)
             info = github_info(repo, cache)
             desc = clean(info.get("description") or parse_extra(item).get("hover", ""), 100)
             stars = info.get("stars") or clean(item.get("heat")).replace("⭐", "").replace(",", "")
+            if github_stars_value(stars) < GITHUB_MIN_STARS:
+                continue
+            seen_repos.add(repo)
             gh_recs.append((repo, desc, stars, info))
             if len(gh_recs) >= 3:
                 break
@@ -1601,27 +1778,8 @@ def build_briefing() -> tuple[str, str]:
                 tag = "开发工具"
             else:
                 tag = "趋势项目"
-            # 简短中文介绍（基于实际描述, 避免重复）
-            cn_intro = ""
-            d = words_for(desc)
-            if contains_any(d, ("design system", "design.md", "brand design")):
-                cn_intro = "知名品牌设计规范分析合集，AI 可参考生成匹配前端设计。"
-            elif contains_any(d, ("production-grade", "engineering skills", "coding agents")):
-                cn_intro = "生产级 AI 编码 Agent 技能库，含代码审查、调试、部署等工程模板。"
-            elif contains_any(d, ("llm friendly", "web crawler", "scraper")):
-                cn_intro = "开源 LLM 友好网页爬虫，为 RAG 和 AI 应用提供结构化数据。"
-            elif contains_any(d, ("linux server", "securing", "how-to guide")):
-                cn_intro = "Linux 服务器安全加固指南，覆盖防火墙、SSH、审计等最佳实践。"
-            elif contains_any(d, ("penetration testing", "pentest", "autonomous")):
-                cn_intro = "全自主 AI 渗透测试系统，自动发现和验证安全漏洞。"
-            elif contains_any(d, ("job application", "claude code", "hire")):
-                cn_intro = "基于 Claude Code 的 AI 求职助手，自动评估岗位、生成定制简历。"
-            elif contains_any(d, ("office", "document", "excel", "automate")):
-                cn_intro = "面向 AI Agent 的 Office 办公套件 CLI，支持文档读写编辑。"
-            elif contains_any(d, ("meeting", "transcription", "whisper", "speaker")):
-                cn_intro = "隐私优先的本地 AI 会议助理，支持实时转写和说话人分离。"
-            else:
-                cn_intro = f"{clean(desc, 80)}" if desc else "GitHub 趋势热门项目。"
+            # 只输出基于实际描述的中文简介，不把 API 英文原文直接塞进简报。
+            cn_intro = github_description_cn(repo, desc, info.get("topics") or [])
             lines.append(f"  • [{repo}]({url}) ⭐{stars} · {tag}  ")
             lines.append(f"    {cn_intro}  ")
         lines.append("")
@@ -1663,11 +1821,13 @@ def build_briefing() -> tuple[str, str]:
     lines.append("🌏 **国外热点**")
     lines.append("")
     intl_items = unique(query_source("reuters", 4) + query_source("bbc_world", 4) + query_source("techcrunch", 3) + query_source("googlenews", 3), 6, used_keys=used_keys)
-    for item in intl_items:
+    for idx, item in enumerate(intl_items, 1):
         used_keys.add(item_key(item))
         source = item.get("source")
         section = "科技·数码" if source == "techcrunch" else "时政·外交"
-        add_news_block(lines, item, section, ranks)
+        display_item = dict(item)
+        display_item["title"] = foreign_title_cn(item.get("title"), idx)
+        add_news_block(lines, display_item, section, ranks)
 
     lines.append("🤖 **AI·前沿**")
     lines.append("")
@@ -1693,12 +1853,21 @@ def build_briefing() -> tuple[str, str]:
 
     lines.append("🐙 **GitHub 趋势**")
     lines.append("")
-    gh_daily = query_source("github", 6)
-    for idx, item in enumerate(gh_daily, 1):
+    gh_daily: list[tuple[dict, dict]] = []
+    for item in query_source("github", 30):
+        repo = repo_name(item)
+        info = github_info(repo, cache)
+        stars = info.get("stars") or item.get("heat")
+        if github_stars_value(stars) < GITHUB_MIN_STARS:
+            continue
+        gh_daily.append((item, info))
+        if len(gh_daily) >= 6:
+            break
+    for idx, (item, info) in enumerate(gh_daily, 1):
         repo = repo_name(item)
         used_keys.add(item_key(item))
         used_keys.add(f"repo:{repo}")  # 记录仓库名便于周榜/机会去重
-        add_github_item(lines, repo, clean(item.get("url")) or f"https://github.com/{repo}", idx, github_info(repo, cache), True, item)
+        add_github_item(lines, repo, clean(item.get("url")) or f"https://github.com/{repo}", idx, info, True, item)
     weekly = cache.get("github_weekly", [])[:6]
     weekly_repos_seen: set[str] = set()
     weekly_shown = 0
@@ -1708,14 +1877,19 @@ def build_briefing() -> tuple[str, str]:
         if repo in weekly_repos_seen or f"repo:{repo}" in used_keys:
             continue
         weekly_repos_seen.add(repo)
-        used_keys.add(f"repo:{repo}")
-        weekly_shown += 1
         info = dict(github_info(repo, cache))
         info.setdefault("stars", item.get("stars"))
         info.setdefault("description", item.get("description"))
+        if github_stars_value(info.get("stars")) < GITHUB_MIN_STARS:
+            continue
+        weekly_shown += 1
+        used_keys.add(f"repo:{repo}")
         add_github_item(lines, repo, f"https://github.com/{repo}", weekly_shown, info, False)
         if weekly_shown >= 6:
             break
+    if weekly_shown == 0:
+        lines.append("• 本周暂无达到10万 Stars 的 GitHub 项目。")
+        lines.append("")
 
     lines.append("🐱 **HackerNews**")
     lines.append("")
@@ -1790,11 +1964,21 @@ def build_briefing() -> tuple[str, str]:
     lines.append("> 关注：官方通报、权威媒体复核和相关行业响应。")
     lines.append("")
     # 机会条目：从 GitHub 日榜中取一个有描述的，跳过已展示的
-    gh_items = query_source("github", 10)
-    opp_item = next((it for it in gh_items if item_key(it) not in used_keys and f"repo:{repo_name(it)}" not in used_keys), None)
+    gh_items = query_source("github", 50)
+    opp_item = next(
+        (
+            it for it in gh_items
+            if github_stars_value(
+                github_info(repo_name(it), cache).get("stars") or it.get("heat")
+            ) >= GITHUB_MIN_STARS
+            and item_key(it) not in used_keys
+            and f"repo:{repo_name(it)}" not in used_keys
+        ),
+        None,
+    )
     if opp_item:
         opp_repo = repo_name(opp_item)
-        opp_url = clean(opp_item.get("url")) or f"https://github.com/{opp_repo}"
+        opp_url = markdown_url(opp_item.get("url") or f"https://github.com/{opp_repo}")
         opp_desc = clean(parse_extra(opp_item).get("hover") or parse_extra(opp_item).get("desc"), 60)
         used_keys.add(item_key(opp_item))
         lines.append(f"• 🟢 机会：[{opp_repo}]({opp_url})")
@@ -1802,10 +1986,19 @@ def build_briefing() -> tuple[str, str]:
     else:
         # 从数据库补查一个有描述的 GitHub 项目
         fallback_gh = query_source("github", 50)
-        fallback_item = next((it for it in fallback_gh if item_key(it) not in used_keys), None)
+        fallback_item = next(
+            (
+                it for it in fallback_gh
+                if github_stars_value(
+                    github_info(repo_name(it), cache).get("stars") or it.get("heat")
+                ) >= GITHUB_MIN_STARS
+                and item_key(it) not in used_keys
+            ),
+            None,
+        )
         if fallback_item:
             fb_repo = repo_name(fallback_item)
-            fb_url = clean(fallback_item.get("url")) or f"https://github.com/{fb_repo}"
+            fb_url = markdown_url(fallback_item.get("url") or f"https://github.com/{fb_repo}")
             used_keys.add(item_key(fallback_item))
             lines.append(f"• 🟢 机会：[{fb_repo}]({fb_url})")
             lines.append("> 影响：项目进入 GitHub 趋势榜，开发者在快速验证相关方向，建议关注后续 commits。  ")

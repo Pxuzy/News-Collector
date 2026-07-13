@@ -69,6 +69,9 @@ def main():
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
     print(f"\n📰 News-Collector 全流程 | {timestamp}")
     print(f"   项目路径: {ROOT}")
+    # Collection and gap-filling are best-effort because a partial run can
+    # still leave enough fresh data for a valid briefing. Only generation and
+    # the three delivery gates decide whether the briefing is publishable.
     success = True
 
     # 1. 采集
@@ -79,7 +82,6 @@ def main():
             cmd.append('--core')
         step("① 采集新闻")
         if not run(cmd, timeout=180):
-            success = False
             print("  ⚠️ 采集部分失败，继续执行补齐和生成...")
     else:
         step("① 跳过采集（--skip-collect）")
@@ -88,7 +90,6 @@ def main():
     step("② 补齐数据缺口")
     fix = os.path.join(ROOT, 'scripts', 'fix_data_gaps.py')
     if not run([sys.executable, fix], timeout=180):
-        success = False
         print("  ⚠️ 数据补齐失败，继续生成已有数据简报...")
 
     # 3. 生成简报（调用 nb_query 获取数据 + Python 生成）
